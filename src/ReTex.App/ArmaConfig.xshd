@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<!-- Highlighting for Arma 3 config.cpp (a C-like class/property format). -->
+<SyntaxDefinition name="ArmaConfig"
+                  xmlns="http://icsharpcode.net/sharpdevelop/syntaxdefinition/2008">
+
+  <!-- Dark palette, tuned to the editor's #0B1220 background. -->
+  <Color name="Comment"  foreground="#6A9955" />
+  <Color name="String"   foreground="#CE9178" />
+  <Color name="Keyword"  foreground="#569CD6" fontWeight="bold" />
+  <Color name="Property" foreground="#9CDCFE" />
+  <Color name="Number"   foreground="#B5CEA8" />
+
+  <RuleSet ignoreCase="false">
+
+    <!-- Comments: // line and /* block */ -->
+    <Span color="Comment" begin="//" />
+    <Span color="Comment" multiline="true" begin="/\*" end="\*/" />
+
+    <!-- Strings. Arma escapes an embedded quote by doubling it (""); the nested span
+         consumes "" so a doubled quote doesn't prematurely end the string. -->
+    <Span color="String" multiline="false">
+      <Begin>"</Begin>
+      <End>"</End>
+      <RuleSet>
+        <Span begin='""' end="" />
+      </RuleSet>
+    </Span>
+
+    <Keywords color="Keyword">
+      <Word>class</Word>
+      <Word>delete</Word>
+      <Word>enum</Word>
+      <Word>true</Word>
+      <Word>false</Word>
+    </Keywords>
+
+    <!-- Property name on the left of an assignment: ident, optional [], then = / += -->
+    <Rule color="Property">
+      \b[a-zA-Z_]\w*(?=\s*(\[\s*\])?\s*\+?=)
+    </Rule>
+
+    <!-- Numbers (ints, decimals, scientific). -->
+    <Rule color="Number">
+      \b\d+(\.\d+)?([eE][+-]?\d+)?\b
+    </Rule>
+
+  </RuleSet>
+</SyntaxDefinition>

@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <RootNamespace>ReTex.App</RootNamespace>
+    <AssemblyName>ReTex</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+    <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Arma config.cpp grammar for the config editor (loaded as an embedded resource). -->
+    <EmbeddedResource Include="ArmaConfig.xshd" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\ReTex.Core\ReTex.Core.csproj" />
+  </ItemGroup>
+
+</Project>

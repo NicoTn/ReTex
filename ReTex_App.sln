@@ -1,0 +1,57 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{FD1580CD-0280-4AB2-9608-F7DD8F2541C3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReTex.Core", "src\ReTex.Core\ReTex.Core.csproj", "{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReTex.App", "src\ReTex.App\ReTex.App.csproj", "{E601A63D-E344-4758-BBA4-5424760EDE73}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tools", "tools", "{00F6B8DD-B529-4A43-91A6-FDB262A59369}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RapDump", "tools\RapDump\RapDump.csproj", "{2EE559BB-0EE0-404D-98C5-6185E720A2C7}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Probe", "tools\Probe\Probe.csproj", "{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaaDump", "tools\PaaDump\PaaDump.csproj", "{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E601A63D-E344-4758-BBA4-5424760EDE73}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E601A63D-E344-4758-BBA4-5424760EDE73}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E601A63D-E344-4758-BBA4-5424760EDE73}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E601A63D-E344-4758-BBA4-5424760EDE73}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2EE559BB-0EE0-404D-98C5-6185E720A2C7}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2EE559BB-0EE0-404D-98C5-6185E720A2C7}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2EE559BB-0EE0-404D-98C5-6185E720A2C7}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2EE559BB-0EE0-404D-98C5-6185E720A2C7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86} = {FD1580CD-0280-4AB2-9608-F7DD8F2541C3}
+		{E601A63D-E344-4758-BBA4-5424760EDE73} = {FD1580CD-0280-4AB2-9608-F7DD8F2541C3}
+		{2EE559BB-0EE0-404D-98C5-6185E720A2C7} = {00F6B8DD-B529-4A43-91A6-FDB262A59369}
+		{57A96B51-BA3F-4D48-9FFF-0D8DC17B391B} = {00F6B8DD-B529-4A43-91A6-FDB262A59369}
+		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C} = {00F6B8DD-B529-4A43-91A6-FDB262A59369}
+	EndGlobalSection
+EndGlobal

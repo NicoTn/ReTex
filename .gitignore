@@ -1,0 +1,11 @@
+bin/
+obj/
+.vs/
+*.user
+artifacts/
+
+# Claude / AI assistant files
+.claude/
+CLAUDE.md
+CLAUDE.local.md
+.mcp.json

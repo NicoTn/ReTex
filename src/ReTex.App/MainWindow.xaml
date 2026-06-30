@@ -1,0 +1,171 @@
+<Window x:Class="ReTex.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:ReTex.App.ViewModels"
+        xmlns:local="clr-namespace:ReTex.App"
+        xmlns:avalonedit="http://icsharpcode.net/sharpdevelop/avalonedit"
+        Title="ReTex - Arma 3 Retexture Studio" Height="760" Width="1260"
+        UseLayoutRounding="True">
+
+    <Window.DataContext>
+        <vm:MainViewModel/>
+    </Window.DataContext>
+
+    <DockPanel>
+        <!-- Toolbar -->
+        <Border DockPanel.Dock="Top" Padding="8" Background="#1F2937">
+            <DockPanel>
+                <TextBlock Text="Mod folder:" Foreground="#D1D5DB" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Button DockPanel.Dock="Right" Content="Scan" Width="80" Margin="8,0,0,0"
+                        Command="{Binding ScanWorkshopCommand}"/>
+                <TextBox Text="{Binding WorkshopPath, UpdateSourceTrigger=PropertyChanged}"
+                         VerticalContentAlignment="Center"/>
+            </DockPanel>
+        </Border>
+
+        <!-- Status bar -->
+        <Border DockPanel.Dock="Bottom" Padding="8,4" Background="#111827">
+            <TextBlock Text="{Binding Status}" Foreground="#9CA3AF" TextTrimming="CharacterEllipsis"/>
+        </Border>
+
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="280"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="360"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Mods -->
+            <DockPanel Grid.Column="0" Margin="6">
+                <TextBlock DockPanel.Dock="Top" Text="Mods" FontWeight="Bold" Margin="2,2,2,6"/>
+                <TextBox DockPanel.Dock="Top" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                         Text="{Binding ModSearch, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Filter mods by name"/>
+                <ListBox ItemsSource="{Binding Mods}" SelectedItem="{Binding SelectedMod}"
+                         DisplayMemberPath="DisplayName" HorizontalContentAlignment="Stretch"/>
+            </DockPanel>
+
+            <GridSplitter Grid.Column="1" Width="4" VerticalAlignment="Stretch"/>
+
+            <!-- Assets -->
+            <DockPanel Grid.Column="2" Margin="6">
+                <TextBlock DockPanel.Dock="Top" Text="Retexturable assets" FontWeight="Bold" Margin="2,2,2,6"/>
+                <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6" ItemsSource="{Binding PboNames}"
+                          SelectedItem="{Binding PboFilter}" ToolTip="Filter by PBO (sub-mod)"/>
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <ComboBox Width="110" ItemsSource="{Binding Categories}"
+                              SelectedItem="{Binding CategoryFilter}"/>
+                    <TextBox Margin="6,0,0,0" VerticalContentAlignment="Center"
+                             Text="{Binding AssetSearch, UpdateSourceTrigger=PropertyChanged}"/>
+                </DockPanel>
+                <ListBox ItemsSource="{Binding Assets}" SelectedItem="{Binding SelectedAsset}"
+                         HorizontalContentAlignment="Stretch">
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel>
+                                <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"
+                                           TextTrimming="CharacterEllipsis"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <Border Background="#374151" CornerRadius="3" Padding="4,0" Margin="0,1,6,1">
+                                        <TextBlock Text="{Binding Category}" Foreground="#D1D5DB" FontSize="10"/>
+                                    </Border>
+                                    <TextBlock Text="{Binding ClassName}" Foreground="#6B7280" FontSize="11"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                </ListBox>
+            </DockPanel>
+
+            <GridSplitter Grid.Column="3" Width="4" VerticalAlignment="Stretch"/>
+
+            <!-- Detail + workflow -->
+            <DockPanel Grid.Column="4" Margin="6">
+                <!-- Asset detail -->
+                <Border DockPanel.Dock="Top" BorderBrush="#374151" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
+                    <StackPanel DataContext="{Binding SelectedAsset}">
+                        <TextBlock Text="{Binding Label}" FontWeight="Bold" FontSize="14" TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding Model}" Foreground="#6B7280" FontSize="11" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock Text="Selections to retexture:" Margin="0,6,0,0" FontWeight="SemiBold"/>
+                        <ItemsControl ItemsSource="{Binding DataContext.AssetSelections, RelativeSource={RelativeSource AncestorType=Window}}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <CheckBox Content="{Binding Label}" IsChecked="{Binding Selected}" Foreground="#D1D5DB"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <ItemsControl ItemsSource="{Binding HiddenSelectionsTextures}" Margin="0,4,0,0">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding}" Foreground="#6B7280" FontSize="11" TextTrimming="CharacterEllipsis"/></DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- Texture preview -->
+                <Border DockPanel.Dock="Top" Height="220" Background="#0B1220" Margin="0,0,0,8"
+                        BorderBrush="#374151" BorderThickness="1">
+                    <Grid>
+                        <Image Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
+                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                        <TextBlock Text="{Binding PreviewInfo}" Foreground="#6B7280" FontSize="10"
+                                   VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
+                    </Grid>
+                </Border>
+
+                <!-- Project controls -->
+                <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                    <DockPanel Margin="0,0,0,6">
+                        <TextBlock Text="Project:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Button DockPanel.Dock="Right" Content="Open…" Width="64" Margin="6,0,0,0"
+                                Command="{Binding OpenProjectCommand}"/>
+                        <Button DockPanel.Dock="Right" Content="New" Width="56" Margin="6,0,0,0"
+                                Command="{Binding NewProjectCommand}"/>
+                        <TextBox Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalContentAlignment="Center"/>
+                    </DockPanel>
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                        <Button Content="Retexture selected asset →" Padding="10,4"
+                                Command="{Binding RetextureSelectedCommand}"/>
+                        <Button Content="Retexture all listed" Padding="10,4" Margin="6,0,0,0"
+                                Command="{Binding RetextureAllListedCommand}"
+                                ToolTip="Add every asset currently shown (after filtering) to the project"/>
+                    </StackPanel>
+                    <CheckBox Content="Copy source values (armor/stats)" Margin="0,0,0,6"
+                              IsChecked="{Binding CopySourceValues}"/>
+                    <DockPanel>
+                        <TextBlock DockPanel.Dock="Top" Text="Retextures in project" FontWeight="SemiBold" Margin="0,0,0,2"/>
+                        <StackPanel DockPanel.Dock="Right" VerticalAlignment="Top" Margin="6,0,0,0">
+                            <Button Content="Edit" Width="70" Command="{Binding EditEntryTexturesCommand}"
+                                    ToolTip="Open this retexture's .paa(s) in your default editor (GIMP/Photoshop)"/>
+                            <Button Content="Remove" Width="70" Margin="0,4,0,0" Command="{Binding RemoveEntryCommand}"/>
+                        </StackPanel>
+                        <ListBox Height="86" ItemsSource="{Binding ProjectEntries}" SelectedItem="{Binding SelectedEntry}"
+                                 DisplayMemberPath="NewClassName"/>
+                    </DockPanel>
+                </StackPanel>
+
+                <!-- Action buttons -->
+                <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button Content="Regenerate" Width="92" Command="{Binding RegenerateConfigCommand}"
+                            ToolTip="Rebuild config.cpp from the project's retextures (discards manual edits)"/>
+                    <Button Content="Save config" Width="92" Margin="8,0,0,0" Command="{Binding SaveConfigCommand}"/>
+                    <Button Content="Pack @Mod" Width="92" Margin="8,0,0,0" Command="{Binding PackCommand}"/>
+                    <Button Content="Open folder" Width="92" Margin="8,0,0,0" Command="{Binding OpenProjectFolderCommand}"/>
+                </StackPanel>
+
+                <!-- Config editor (AvalonEdit: syntax highlighting, line numbers, Ctrl+F find) -->
+                <avalonedit:TextEditor x:Name="ConfigEditor"
+                         local:AvalonEditBehaviour.BindableText="{Binding ConfigText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                         FontFamily="Consolas" FontSize="12"
+                         ShowLineNumbers="True" WordWrap="False"
+                         HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                         Background="#0B1220" Foreground="#D1D5DB"
+                         LineNumbersForeground="#4B5563"/>
+            </DockPanel>
+        </Grid>
+    </DockPanel>
+</Window>
