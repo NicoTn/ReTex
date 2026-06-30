@@ -199,12 +199,8 @@ ReTex_App/
 
 ## Roadmap
 
-- **3D model preview** — paused. `OdolReader` parses the ODOL v73 header/ModelInfo/
-  skeleton (validated), but full mesh extraction needs ODOL de-binarization (no clean v73
-  spec; existing tools are MLOD-only or unautomatable). Kept as a foundation.
-- **Modlist import** — import an Arma launcher preset (`.html`) instead of a folder scan.
 - **In-project warnings** — flag retextures whose source texture failed to copy.
-
+- **Stuff**
 ---
 
 ## Credits / third-party
