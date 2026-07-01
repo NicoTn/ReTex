@@ -54,15 +54,29 @@ public static class ConfigGenerator
 
         foreach (var e in entries)
         {
+            if (e.IsUniform) { EmitUniformItem(sb, e, p); continue; }
+            if (e.IsUniformUnit) { EmitUniformUnit(sb, e, p); continue; }
+
             sb.AppendLine($"    class {e.NewClassName}: {e.SourceClass} {{");
+            // Full scope trio so the variant reliably shows in Arsenal AND Zeus, even if the source
+            // chain set a lower scopeArsenal/scopeCurator (matches working hand-made configs).
             sb.AppendLine("        scope = 2;");
+            sb.AppendLine("        scopeArsenal = 2;");
+            sb.AppendLine("        scopeCurator = 2;");
             if (e.DisplayName.Length > 0)
                 sb.AppendLine($"        displayName = {Quote(e.DisplayName)};");
 
             // A standalone weapon must point baseWeapon at ITSELF; otherwise Arsenal groups it
-            // under the original class and hides it. (Worn equipment doesn't use baseWeapon.)
+            // under the original class and hides it. (Uniforms/worn equipment must NOT have it.)
             if (e.Category is AssetCategory.Weapon)
                 sb.AppendLine($"        baseWeapon = {Quote(e.NewClassName)};");
+
+            // Declare hiddenSelections explicitly so the textures bind: when we inherit via an
+            // external (forward-declared) base, inherited selections aren't always honoured.
+            var selNames = e.Selections.Where(s => s.Name.Length > 0)
+                .OrderBy(s => s.Index).Select(s => s.Name).ToList();
+            if (selNames.Count > 0 && !e.CopiedBody.Contains("hiddenSelections[]", StringComparison.OrdinalIgnoreCase))
+                sb.AppendLine($"        hiddenSelections[] = {{ {Join(selNames.Select(Quote))} }};");
 
             if (e.CopiedBody.Length > 0)
             {
@@ -87,6 +101,64 @@ public static class ConfigGenerator
         }
         sb.AppendLine("};");
         sb.AppendLine();
+    }
+
+    /// <summary>
+    /// Emits a retextured uniform ITEM (CfgWeapons), modeled on working hand-made configs:
+    /// inherit the source uniform, override displayName + textures, and (critically) declare
+    /// <c>class ItemInfo: ItemInfo</c> so the base uniform's type/containerClass/mass are inherited
+    /// (a bare <c>class ItemInfo {}</c> severs that and hides the uniform from Arsenal). The
+    /// <c>uniformClass</c> points at our paired clothing unit (or the original unit as a fallback).
+    /// No <c>baseWeapon</c> - a uniform with baseWeapon is treated as a weapon variant and won't show.
+    /// </summary>
+    private static void EmitUniformItem(StringBuilder sb, RetexEntry e, RetexProject p)
+    {
+        sb.AppendLine($"    class {e.NewClassName}: {e.SourceClass} {{");
+        sb.AppendLine("        scope = 2;");
+        sb.AppendLine("        scopeArsenal = 2;");
+        sb.AppendLine("        scopeCurator = 2;");
+        if (e.DisplayName.Length > 0)
+            sb.AppendLine($"        displayName = {Quote(e.DisplayName)};");
+        EmitSelectionsAndTextures(sb, e, p);
+        sb.AppendLine("        class ItemInfo: ItemInfo {");
+        if (e.PartnerClass.Length > 0)
+            sb.AppendLine($"            uniformClass = {Quote(e.PartnerClass)};");
+        sb.AppendLine("        };");
+        sb.AppendLine("    };");
+    }
+
+    /// <summary>
+    /// Emits the paired clothing UNIT (CfgVehicles) for a uniform: inherit the source unit, wear the
+    /// new textures, and point <c>uniformClass</c> back at the new item (the reciprocal link Arsenal
+    /// relies on).
+    /// </summary>
+    private static void EmitUniformUnit(StringBuilder sb, RetexEntry e, RetexProject p)
+    {
+        sb.AppendLine($"    class {e.NewClassName}: {e.SourceClass} {{");
+        sb.AppendLine("        scope = 2;");
+        sb.AppendLine("        scopeArsenal = 2;");
+        sb.AppendLine("        scopeCurator = 2;");
+        if (e.DisplayName.Length > 0)
+            sb.AppendLine($"        displayName = {Quote(e.DisplayName)};");
+        if (e.PartnerClass.Length > 0)
+            sb.AppendLine($"        uniformClass = {Quote(e.PartnerClass)};");
+        EmitSelectionsAndTextures(sb, e, p);
+        sb.AppendLine("    };");
+    }
+
+    /// <summary>Emits hiddenSelections[] (named selections) and hiddenSelectionsTextures[] (project
+    /// texture where retextured, else the original) in selection order.</summary>
+    private static void EmitSelectionsAndTextures(StringBuilder sb, RetexEntry e, RetexProject p)
+    {
+        var selNames = e.Selections.Where(s => s.Name.Length > 0)
+            .OrderBy(s => s.Index).Select(s => s.Name).ToList();
+        if (selNames.Count > 0)
+            sb.AppendLine($"        hiddenSelections[] = {{ {Join(selNames.Select(Quote))} }};");
+
+        var textured = e.Selections.OrderBy(s => s.Index)
+            .Where(s => s.ProjectTexture.Length > 0 || s.SourceTexture.Length > 0).ToList();
+        if (textured.Count > 0)
+            sb.AppendLine($"        hiddenSelectionsTextures[] = {{ {Join(textured.Select(s => Quote(TextureFor(s, p))))} }};");
     }
 
     /// <summary>Virtual path of a selection's texture: project texture if retextured, else the original.</summary>

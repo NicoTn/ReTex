@@ -59,6 +59,32 @@ if (args.Length >= 3 && args[0] == "--findaddon")
     return 0;
 }
 
+// Regenerate config.cpp from a project's retex.json: Probe --regen <retex.json>
+if (args.Length >= 2 && args[0] == "--regen")
+{
+    var rp = RetexProject.Load(args[1]);
+    RetexProjectService.GenerateConfig(rp);
+    Console.WriteLine($"Regenerated {rp.ConfigPath}\n");
+    Console.WriteLine(File.ReadAllText(rp.ConfigPath));
+    return 0;
+}
+
+// Dump a parsed config class (recursively): Probe --classdump <pbo> <className> [depth]
+if (args.Length >= 3 && args[0] == "--classdump")
+{
+    using var arc = new ReTex.Core.Pbo.PboArchive(args[1]);
+    var cfg = arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.bin", StringComparison.OrdinalIgnoreCase))
+           ?? arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.cpp", StringComparison.OrdinalIgnoreCase));
+    var bytes = arc.Extract(cfg!);
+    var root3 = ReTex.Core.Rap.RapReader.IsRapified(bytes)
+        ? ReTex.Core.Rap.RapReader.Parse(bytes)
+        : ReTex.Core.Rap.CppConfigParser.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+    int depth = args.Length > 3 && int.TryParse(args[3], out var dd) ? dd : 4;
+    var want3 = args[2];
+    RapClassFinder.FindAndDump(root3, want3, depth);
+    return 0;
+}
+
 // Dump a PBO text entry: Probe --catentry <pbo> <entrySubstring>
 if (args.Length >= 3 && args[0] == "--catentry")
 {
@@ -202,7 +228,7 @@ Console.WriteLine($"  hiddenSelectionsTextures: {string.Join(", ", asset.HiddenS
 // Create a project and add the retexture (copies the source .paa).
 Directory.CreateDirectory(projParent);
 var proj = RetexProjectService.CreateProject(projParent, "PrimarisTest");
-var entry = RetexProjectService.AddRetexture(proj, asset, mod.PboPaths);
+var entry = RetexProjectService.AddRetexture(proj, asset, mod.PboPaths, modAssets: assets);
 RetexProjectService.GenerateConfig(proj);
 
 Console.WriteLine($"\nProject: {proj.ProjectDir}");
@@ -224,3 +250,36 @@ if (pboc is not null)
         Console.WriteLine($"  {f.Substring(proj.ProjectDir.Length + 1)} ({new FileInfo(f).Length} bytes)");
 }
 return 0;
+
+static class RapClassFinder
+{
+    public static void FindAndDump(ReTex.Core.Rap.RapClass root, string name, int depth)
+    {
+        var found = Find(root, name);
+        if (found is null) { Console.WriteLine($"(class '{name}' not found)"); return; }
+        Dump(found, 0, depth);
+    }
+
+    static ReTex.Core.Rap.RapClass? Find(ReTex.Core.Rap.RapClass c, string name)
+    {
+        foreach (var ch in c.Classes)
+        {
+            if (ch.Name.Equals(name, StringComparison.OrdinalIgnoreCase)) return ch;
+            var r = Find(ch, name);
+            if (r is not null) return r;
+        }
+        return null;
+    }
+
+    static void Dump(ReTex.Core.Rap.RapClass c, int d, int maxDepth)
+    {
+        var ind = new string(' ', d * 2);
+        var baseName = string.IsNullOrEmpty(c.Parent) ? "" : $": {c.Parent}";
+        Console.WriteLine($"{ind}class {c.Name}{baseName} {{");
+        foreach (var kv in c.Properties)
+            Console.WriteLine($"{ind}  {kv.Key} = {kv.Value};");
+        if (d < maxDepth)
+            foreach (var ch in c.Classes) Dump(ch, d + 1, maxDepth);
+        Console.WriteLine($"{ind}}}");
+    }
+}

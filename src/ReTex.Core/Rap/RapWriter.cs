@@ -9,8 +9,9 @@ public static class RapWriter
     /// <summary>
     /// Writes the inner body of <paramref name="node"/> (properties + nested classes) at the given
     /// indent. Properties in <paramref name="skip"/> are omitted (so the caller can re-emit its own).
-    /// Nested classes are written WITHOUT a parent, since they override members inherited by the
-    /// enclosing class.
+    /// Nested classes keep their parent (e.g. <c>class ItemInfo: ItemInfo</c>): dropping it severs
+    /// inheritance from the enclosing class's inherited subclass, losing members like a uniform's
+    /// type/containerClass/mass.
     /// </summary>
     public static string WriteBody(RapClass node, int indent = 8, ISet<string>? skip = null)
     {
@@ -32,7 +33,9 @@ public static class RapWriter
 
         foreach (var sub in node.Classes)
         {
-            sb.Append(pad).Append("class ").Append(sub.Name).AppendLine(" {");
+            sb.Append(pad).Append("class ").Append(sub.Name);
+            if (sub.Parent.Length > 0) sb.Append(": ").Append(sub.Parent);
+            sb.AppendLine(" {");
             WriteBody(sb, sub, indent + 4, EmptySkip);
             sb.Append(pad).AppendLine("};");
         }

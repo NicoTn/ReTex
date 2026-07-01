@@ -202,7 +202,7 @@ public partial class MainViewModel : ObservableObject
         try
         {
             _project ??= RetexProjectService.CreateProject(ProjectsRoot, ProjectName);
-            var entry = RetexProjectService.AddRetexture(_project, SelectedAsset, SelectedMod.PboPaths, indices: chosen, copyValues: CopySourceValues);
+            var entry = RetexProjectService.AddRetexture(_project, SelectedAsset, SelectedMod.PboPaths, indices: chosen, copyValues: CopySourceValues, modAssets: _allAssets);
             RetexProjectService.GenerateConfig(_project);
             RefreshEntries();
             ConfigText = File.ReadAllText(_project.ConfigPath);
@@ -296,7 +296,7 @@ public partial class MainViewModel : ObservableObject
         int n = await Task.Run(() =>
         {
             int c = 0;
-            foreach (var a in toAdd) { RetexProjectService.AddRetexture(proj, a, mod.PboPaths, copyValues: CopySourceValues); c++; }
+            foreach (var a in toAdd) { RetexProjectService.AddRetexture(proj, a, mod.PboPaths, copyValues: CopySourceValues, modAssets: _allAssets); c++; }
             RetexProjectService.GenerateConfig(proj);
             return c;
         });
@@ -309,6 +309,10 @@ public partial class MainViewModel : ObservableObject
     private void RemoveEntry()
     {
         if (_project is null || SelectedEntry is null) return;
+        // A uniform is two cross-linked entries (item + clothing unit); remove both halves together.
+        if (SelectedEntry.PartnerClass.Length > 0 && (SelectedEntry.IsUniform || SelectedEntry.IsUniformUnit))
+            _project.Entries.RemoveAll(e =>
+                e.NewClassName.Equals(SelectedEntry.PartnerClass, StringComparison.OrdinalIgnoreCase));
         _project.Entries.Remove(SelectedEntry);
         RetexProjectService.GenerateConfig(_project);
         RefreshEntries();

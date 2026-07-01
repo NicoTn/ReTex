@@ -121,7 +121,12 @@ public static class AssetExtractor
             var ii = k.Class("ItemInfo");
             return ii is not null && (ii.Properties.ContainsKey("uniformModel")
                                       || ii.Properties.ContainsKey("type")
-                                      || ii.Properties.ContainsKey("armor"));
+                                      || ii.Properties.ContainsKey("armor")
+                                      // A uniform's `type` (801) usually comes from a vanilla base
+                                      // outside the mod index; uniformClass/containerClass identify
+                                      // wearables (uniform/vest/backpack-item) regardless.
+                                      || ii.Properties.ContainsKey("uniformClass")
+                                      || ii.Properties.ContainsKey("containerClass"));
         });
         return worn ? AssetCategory.Equipment : AssetCategory.Weapon;
     }

@@ -32,6 +32,23 @@ public sealed class RetexEntry
     /// <summary>Source class's declared values (armor, weapon stats, ItemInfo, ...) serialized to config text, copied into the new class. Empty if not copying values.</summary>
     public string CopiedBody { get; set; } = "";
 
+    /// <summary>
+    /// True when this entry is the <c>CfgWeapons</c> uniform ITEM half of a uniform pair, false
+    /// otherwise. A uniform is two cross-linked classes - the item (what you pick in Arsenal) and a
+    /// <c>CfgVehicles</c> clothing UNIT (the worn model). The generator emits a dedicated, minimal
+    /// structure for these (clean <c>class ItemInfo: ItemInfo</c> inheritance + reciprocal
+    /// <c>uniformClass</c>) rather than copying the source body, matching working hand-made configs.
+    /// </summary>
+    public bool IsUniform { get; set; }
+
+    /// <summary>True when this entry is the paired <c>CfgVehicles</c> clothing UNIT for a uniform.</summary>
+    public bool IsUniformUnit { get; set; }
+
+    /// <summary>The other half's <see cref="NewClassName"/>: the unit (for an item) or the item (for a
+    /// unit). The two reference each other via <c>uniformClass</c>, which is what makes the retextured
+    /// uniform appear in Arsenal. Empty for everything that isn't part of a uniform pair.</summary>
+    public string PartnerClass { get; set; } = "";
+
     public List<RetexSelection> Selections { get; set; } = new();
 }
 

@@ -194,13 +194,22 @@ ReTex_App/
   automatically.
 - **Weapons in Arsenal.** A retextured weapon must point `baseWeapon` at *itself* or
   Arsenal hides it as a sub-variant; ReTex emits the self-reference for you.
+- **Uniforms are a pair.** A uniform is a `CfgWeapons` item plus a `CfgVehicles` "clothing"
+  unit that reciprocally reference each other via `uniformClass`; Arsenal hides a uniform
+  whose unit doesn't claim it back. Retexturing a uniform auto-creates the paired unit,
+  links both ways, reuses the copied textures, and (unlike weapons) omits `baseWeapon` —
+  a uniform with `baseWeapon` is treated as a weapon variant and won't show.
 
 ---
 
 ## Roadmap
 
+- **3D model preview** — paused. `OdolReader` parses the ODOL v73 header/ModelInfo/
+  skeleton (validated), but full mesh extraction needs ODOL de-binarization (no clean v73
+  spec; existing tools are MLOD-only or unautomatable). Kept as a foundation.
+- **Modlist import** — import an Arma launcher preset (`.html`) instead of a folder scan.
 - **In-project warnings** — flag retextures whose source texture failed to copy.
-- **Stuff**
+
 ---
 
 ## Credits / third-party
