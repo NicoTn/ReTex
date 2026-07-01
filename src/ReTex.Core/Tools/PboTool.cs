@@ -19,13 +19,24 @@ public sealed class PboTool
         PbocPath = pbocPath;
     }
 
-    /// <summary>Locates pboc.exe at its default install location (%LOCALAPPDATA%\PBO Manager).</summary>
+    /// <summary>
+    /// Locates pboc.exe at its known install locations: the per-user install
+    /// (%LOCALAPPDATA%\PBO Manager) and the all-users install (Program Files / Program Files (x86)).
+    /// </summary>
     public static string? FindDefault()
     {
-        var p = Path.Combine(
+        foreach (var baseDir in new[]
+        {
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "PBO Manager", "pboc.exe");
-        return File.Exists(p) ? p : null;
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        })
+        {
+            if (baseDir.Length == 0) continue;
+            var p = Path.Combine(baseDir, "PBO Manager", "pboc.exe");
+            if (File.Exists(p)) return p;
+        }
+        return null;
     }
 
     /// <summary>Packs <paramref name="folder"/> into "&lt;folderName&gt;.pbo" under <paramref name="outputDir"/>.</summary>

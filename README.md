@@ -46,7 +46,7 @@ unpacking PBOs by hand.
 |---|---|
 | **Windows 10 / 11 (x64)** | The app is WPF; Windows only. |
 | **.NET 8 Desktop Runtime** | Only for the *framework-dependent* download. The **self-contained release has the runtime bundled** — nothing to install. Get it at <https://dotnet.microsoft.com/download/dotnet/8.0> (choose *Desktop Runtime x64*). |
-| **PBO Manager (pboman3)** | Provides `pboc.exe`, used for the **Pack @Mod** step only. ReTex auto-detects it at `%LOCALAPPDATA%\PBO Manager\pboc.exe`. Get it from <https://github.com/winseros/pboman3>. Browsing, previewing, copying textures, and config generation all work **without** it — you only need it to pack the final PBO. |
+| **PBO Manager (pboman3)** | Provides `pboc.exe`, used for the **Pack @Mod** step only. ReTex auto-detects both the per-user install (`%LOCALAPPDATA%\PBO Manager\pboc.exe`) and the all-users install (`%ProgramFiles%\PBO Manager\pboc.exe`). Get it from <https://github.com/winseros/pboman3>. Browsing, previewing, copying textures, and config generation all work **without** it — you only need it to pack the final PBO. |
 | **Arma 3 + Workshop mods** | Needed to have something to retexture. Point ReTex at your `…\Steam\steamapps\common\Arma 3\!Workshop` folder. |
 
 ### Optional
