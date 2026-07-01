@@ -47,6 +47,12 @@ public static class ConfigGenerator
         if (entries.Count == 0) return;
 
         sb.AppendLine($"class {cfgName} {{");
+        // A uniform item declares `class ItemInfo: ItemInfo` to inherit the base uniform's ItemInfo
+        // (type=801/containerClass/mass). In a standalone patch config that base isn't visible, so
+        // forward-declare the engine's CfgWeapons-level `class ItemInfo` or the inheritance errors
+        // with "Undefined base class 'ItemInfo'".
+        if (entries.Any(e => e.IsUniform))
+            sb.AppendLine("    class ItemInfo;");
         // Forward-declare each distinct base class.
         foreach (var baseClass in entries.Select(e => e.SourceClass).Distinct(StringComparer.OrdinalIgnoreCase))
             sb.AppendLine($"    class {baseClass};");
