@@ -181,27 +181,6 @@ ReTex_App/
 
 ---
 
-## Known gotchas
-
-- **`pboc` won't overwrite** an existing output PBO (it exits 0 but silently skips);
-  `PboTool` deletes the target first so a repack always takes effect.
-- **No `$PBOPREFIX$`?** Arma falls back to the **PBO file name** as the prefix; ReTex does
-  the same when resolving textures.
-- **Forward-slash entry paths.** Some packers store PBO entries with `/` instead of `\`;
-  ReTex normalizes separators so those PBOs are detected and their textures copy.
-- **Extensionless texture refs.** Many mods (especially vehicles) write
-  `hiddenSelectionsTextures` without the `.paa` extension; ReTex resolves the `.paa` form
-  automatically.
-- **Weapons in Arsenal.** A retextured weapon must point `baseWeapon` at *itself* or
-  Arsenal hides it as a sub-variant; ReTex emits the self-reference for you.
-- **Uniforms are a pair.** A uniform is a `CfgWeapons` item plus a `CfgVehicles` "clothing"
-  unit that reciprocally reference each other via `uniformClass`; Arsenal hides a uniform
-  whose unit doesn't claim it back. Retexturing a uniform auto-creates the paired unit,
-  links both ways, reuses the copied textures, and (unlike weapons) omits `baseWeapon` —
-  a uniform with `baseWeapon` is treated as a weapon variant and won't show.
-
----
-
 ## Credits / third-party
 
 - [pboman3](https://github.com/winseros/pboman3) — `pboc` PBO pack/unpack CLI.
