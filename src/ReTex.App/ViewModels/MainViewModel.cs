@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Windows;
 using System.Windows.Media.Imaging;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -52,6 +53,31 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        WorkshopPath = _settings.WorkshopPath;
+        ProjectsRoot = _settings.ProjectsRoot;
+        if (Directory.Exists(WorkshopPath)) ScanWorkshop();
+    }
+
+    /// <summary>
+    /// Called once the main window is loaded. If the workshop folder can't be found and the
+    /// user hasn't already been through Settings, pop it up automatically so they can point
+    /// ReTex at the right folder instead of silently showing an empty mod list.
+    /// </summary>
+    public void CheckFirstRunSetup(Window owner)
+    {
+        if (_settings.SetupCompleted) return;
+        if (Directory.Exists(WorkshopPath)) return;
+        OpenSettings(owner, isFirstRun: true);
+    }
+
+    [RelayCommand]
+    private void OpenSettings() => OpenSettings(Application.Current.MainWindow, isFirstRun: false);
+
+    private void OpenSettings(Window? owner, bool isFirstRun)
+    {
+        var window = new SettingsWindow(_settings, isFirstRun) { Owner = owner };
+        if (window.ShowDialog() != true) return;
+
         WorkshopPath = _settings.WorkshopPath;
         ProjectsRoot = _settings.ProjectsRoot;
         if (Directory.Exists(WorkshopPath)) ScanWorkshop();
@@ -355,8 +381,13 @@ public partial class MainViewModel : ObservableObject
     private async Task Pack()
     {
         if (_project is null) { Status = "No project yet."; return; }
-        var pboc = PboTool.FindDefault();
-        if (pboc is null) { Status = "pboc.exe not found (install PBO Manager)."; return; }
+        var pboc = File.Exists(_settings.PbocPath) ? _settings.PbocPath : PboTool.FindDefault();
+        if (pboc is null)
+        {
+            Status = "pboc.exe not found. Install PBO Manager, or set its path in Settings.";
+            OpenSettings(Application.Current.MainWindow, isFirstRun: true);
+            return;
+        }
 
         File.WriteAllText(_project.ConfigPath, ConfigText); // pack what's shown
         var tool = new PboTool(pboc);

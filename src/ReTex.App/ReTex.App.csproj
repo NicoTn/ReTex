@@ -9,6 +9,7 @@
     <RootNamespace>ReTex.App</RootNamespace>
     <AssemblyName>ReTex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

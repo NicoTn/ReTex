@@ -10,6 +10,12 @@ public sealed class AppSettings
     public string ProjectsRoot { get; set; } =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "ReTex_Projects");
 
+    /// <summary>Manual override for pboc.exe (PBO Manager CLI). Empty = auto-detect.</summary>
+    public string PbocPath { get; set; } = "";
+
+    /// <summary>True once the user has gone through Settings at least once (suppresses the automatic first-run prompt).</summary>
+    public bool SetupCompleted { get; set; }
+
     private static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ReTex");
     private static string FilePath => Path.Combine(Dir, "settings.json");

@@ -16,6 +16,8 @@
         <Border DockPanel.Dock="Top" Padding="8" Background="#1F2937">
             <DockPanel>
                 <TextBlock Text="Mod folder:" Foreground="#D1D5DB" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Button DockPanel.Dock="Right" Content="Settings…" Width="80" Margin="8,0,0,0"
+                        Command="{Binding OpenSettingsCommand}"/>
                 <Button DockPanel.Dock="Right" Content="Scan" Width="80" Margin="8,0,0,0"
                         Command="{Binding ScanWorkshopCommand}"/>
                 <TextBox Text="{Binding WorkshopPath, UpdateSourceTrigger=PropertyChanged}"
