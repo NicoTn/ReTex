@@ -136,6 +136,14 @@ public static class AssetExtractor
         var chain = string.Join("|", ChainNames(c, index)).ToLowerInvariant();
         if (chain.Contains("bag_base") || chain.Contains("backpack")) return AssetCategory.Backpack;
 
+        // Backpacks whose Bag_Base ancestry lives in a DEPENDENCY mod or the base game (outside the
+        // scanned mod's PBOs) can't be caught by the name check above - the resolvable chain
+        // dead-ends before reaching Bag_Base (e.g. CTR jump-packs inherit via TIOW's
+        // B_AssaultPack_Base). Fall back to `maximumLoad`, the Bag_Base cargo-capacity property that
+        // only backpacks carry (cars/tanks/props don't), which is defined locally in the chain.
+        if (HasInChain(c, index, k => k.Properties.ContainsKey("maximumLoad")))
+            return AssetCategory.Backpack;
+
         if (HasInChain(c, index, k => k.Properties.ContainsKey("maxSpeed")
                                       || k.Properties.ContainsKey("fuelCapacity")
                                       || k.Class("Turrets") is not null))

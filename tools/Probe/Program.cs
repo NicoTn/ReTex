@@ -502,6 +502,20 @@ if (args.Length >= 2 && args[0] == "--modpbos")
     return 0;
 }
 
+// Resolved category for classes: Probe --catof <modFolder> <classNameSubstr> [more...]
+if (args.Length >= 3 && args[0] == "--catof")
+{
+    var modFolder3 = args[1];
+    var m3 = new ReTex.Core.Mods.ArmaMod { Name = Path.GetFileName(modFolder3), Path = modFolder3, DisplayName = Path.GetFileName(modFolder3) };
+    var ad3 = Path.Combine(modFolder3, "addons");
+    if (Directory.Exists(ad3)) m3.PboPaths.AddRange(Directory.GetFiles(ad3, "*.pbo"));
+    var all3 = AssetService.LoadForMod(m3);
+    foreach (var want in args.Skip(2))
+        foreach (var a in all3.Where(a => a.ClassName.Contains(want, StringComparison.OrdinalIgnoreCase)))
+            Console.WriteLine($"{a.Category,-10} {a.ClassName}   sel=[{string.Join(",", a.HiddenSelections)}]  ({Path.GetFileName(a.SourcePbo)})");
+    return 0;
+}
+
 // PBO listing: Probe --pbols <pbo> [filter]
 if (args.Length >= 2 && args[0] == "--pbols")
 {
