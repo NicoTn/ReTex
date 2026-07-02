@@ -1,4 +1,4 @@
-using lzo.net;
+using ReTex.Core.P3d;
 
 namespace ReTex.Core.Paa;
 
@@ -85,21 +85,13 @@ public sealed class PaaImage
         throw new InvalidDataException("Could not decode any mipmap (LZO unavailable for compressed mips).");
     }
 
-    private static byte[] LzoDecompress(byte[] src, int offset, int len, int outLen)
-    {
-        using var ms = new MemoryStream(src, offset, len);
-        using var lzo = new LzoStream(ms, System.IO.Compression.CompressionMode.Decompress);
-        var outBuf = new byte[outLen];
-        int read = 0;
-        while (read < outLen)
-        {
-            int n = lzo.Read(outBuf, read, outLen - read);
-            if (n <= 0) break;
-            read += n;
-        }
-        if (read < outLen) throw new InvalidDataException("LZO underflow.");
-        return outBuf;
-    }
+    // PAA mipmaps are LZO1X-compressed (the same scheme as ODOL vertex arrays). lzo.net's
+    // LzoStream is unreliable here (it buffers input and can run past a block's end marker), so
+    // large mips would fail to decode and PaaImage fell back to a tiny mip - producing blurry
+    // textures. Use the validated lzo1x_decompress port instead. `len` is unused: LZO1X is
+    // self-terminating (stops at the end-of-stream marker) so only the output length is needed.
+    private static byte[] LzoDecompress(byte[] src, int offset, int len, int outLen) =>
+        Lzo1x.Decompress(src, offset, outLen, out _);
 
     // --- DXT decoders -> BGRA32 top-down ---
 

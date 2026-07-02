@@ -298,26 +298,30 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Builds the 3D model preview off the UI thread: extracts the .p3d from the source
     /// mod's PBOs, decodes it (<see cref="OdolLodReader.ReadVisualLod"/>), maps sections to resolved
     /// textures (<see cref="OdolMeshPreview"/>), and builds a frozen <see cref="Model3DGroup"/>.
-    /// Falls back with an explanatory message when the model can't be extracted or decoded, leaving
-    /// the flat texture tab as the reliable preview.</summary>
+    /// The model is resolved across ALL scanned mods (not just the selected one) so a project entry
+    /// previews from its own source mod without the user having to re-select it. Falls back with an
+    /// explanatory message when the model can't be extracted or decoded, leaving the flat tab.</summary>
     private async Task LoadPreviewModel(string? modelVirtualPath, IReadOnlyList<RetexSelection>? selections)
     {
         PreviewModel3D = null;
         PreviewModelInfo = "";
-        var mod = SelectedMod;
-        if (mod is null || string.IsNullOrWhiteSpace(modelVirtualPath)) { PreviewModelInfo = "(select the source mod to preview the model)"; return; }
-        var pboPaths = mod.PboPaths;
+        if (string.IsNullOrWhiteSpace(modelVirtualPath)) { PreviewModelInfo = "(no source model for this asset)"; return; }
+
+        // Snapshot PBO paths on the UI thread (Mods is an ObservableCollection - not thread-safe).
+        var allPbos = Mods.SelectMany(m => m.PboPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var selPbos = SelectedMod?.PboPaths.ToList() ?? new List<string>();
+        if (allPbos.Count == 0) { PreviewModelInfo = "(scan a mod folder to preview the model)"; return; }
         string? addonDir = _project?.AddonDir;
         try
         {
             var (model, info) = await Task.Run(() =>
             {
-                var bytes = VirtualFileService.Extract(pboPaths, modelVirtualPath!);
-                if (bytes is null) return ((Model3DGroup?)null, "(model not found in the selected mod)");
+                var bytes = ExtractAcrossMods(allPbos, selPbos, modelVirtualPath!);
+                if (bytes is null) return ((Model3DGroup?)null, "(source model not found — is its mod installed and scanned?)");
                 var mesh = OdolLodReader.ReadAnyVisualLod(bytes);
                 if (mesh is null) return (null, "(3D preview not available for this model format — see the texture tab)");
                 var groups = OdolMeshPreview.BuildGroups(mesh, selections, addonDir);
-                var m3d = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, pboPaths));
+                var m3d = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, allPbos, selPbos));
                 string name = Path.GetFileName(modelVirtualPath!.Replace('\\', '/'));
                 return (m3d, $"{name}  {mesh.Points.Length} verts · {mesh.Faces.Count} faces · {groups.Count} texture group(s)");
             });
@@ -327,9 +331,27 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
     }
 
+    /// <summary>Extracts a virtual path from the scanned mods, preferring the PBOs most likely to
+    /// hold it so the common case is fast: (1) PBOs whose file name matches the path's first segment
+    /// (the BI "$PBOPREFIX$ == addon name" convention), then (2) the selected mod's PBOs, then
+    /// (3) everything else as a last resort. <see cref="VirtualFileService.Extract"/> stops at the
+    /// first match, so the tail is only ever opened on a genuine miss.</summary>
+    private static byte[]? ExtractAcrossMods(List<string> allPbos, List<string> selPbos, string virtualPath)
+    {
+        string first = virtualPath.Replace('/', '\\').TrimStart('\\').Split('\\')[0];
+        var ordered = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void Add(IEnumerable<string> ps) { foreach (var p in ps) if (seen.Add(p)) ordered.Add(p); }
+        Add(allPbos.Where(p => Path.GetFileNameWithoutExtension(p).Equals(first, StringComparison.OrdinalIgnoreCase)));
+        Add(selPbos);
+        Add(allPbos);
+        return VirtualFileService.Extract(ordered, virtualPath);
+    }
+
     /// <summary>Loads the pixels for a resolved preview texture: a project .paa from disk when the
-    /// section was retextured, else the model's default texture extracted from the source PBOs.</summary>
-    private static BitmapSource? LoadPreviewTexture(PreviewTexture tex, IReadOnlyList<string> pboPaths)
+    /// section was retextured, else the model's default texture extracted from the source mods
+    /// (resolved across all scanned mods, since a model's textures often live in a different mod).</summary>
+    private static BitmapSource? LoadPreviewTexture(PreviewTexture tex, List<string> allPbos, List<string> selPbos)
     {
         try
         {
@@ -337,7 +359,7 @@ public partial class MainViewModel : ObservableObject
                 return ImageHelper.ToBitmap(PaaImage.LoadFile(tex.ProjectFilePath));
             if (tex.SourceVirtualPath.Length > 0)
             {
-                var bytes = VirtualFileService.Extract(pboPaths, tex.SourceVirtualPath);
+                var bytes = ExtractAcrossMods(allPbos, selPbos, tex.SourceVirtualPath);
                 if (bytes != null) return ImageHelper.ToBitmap(PaaImage.Load(bytes));
             }
         }
@@ -419,9 +441,13 @@ public partial class MainViewModel : ObservableObject
     private void RegenerateConfig()
     {
         if (_project is null) { Status = "No project yet."; return; }
-        RetexProjectService.GenerateConfig(_project);
+        int merged = RetexProjectService.ConsolidateTextures(_project); // count for the status line
+        RetexProjectService.GenerateConfig(_project);                   // (also consolidates; idempotent)
+        RefreshEntries();
         ConfigText = File.ReadAllText(_project.ConfigPath);
-        Status = "Regenerated config from project entries (manual edits overwritten).";
+        Status = merged > 0
+            ? $"Regenerated config; merged {merged} duplicate texture file(s) into shared copies."
+            : "Regenerated config from project entries (manual edits overwritten).";
         WarnIfMissingTextures(_project);
     }
 

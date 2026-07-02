@@ -119,7 +119,11 @@ public static class OdolLodReader
         {
             var hdr = OdolReader.ReadHeader(d);
             var mi = OdolReader.ReadModelInfo(d, hdr.HeaderEndOffset, hdr.Version);
-            int minPos = FindLodMinPos(d, mi.EndOffset, Math.Min(d.Length, mi.EndOffset + 200_000), mi.BBoxMin, mi.BBoxMax);
+            // Scan the whole file for the first LOD's MinPos. It returns the first anchor that passes
+            // bbox-containment + a valid texture trailer, which for v73 is LOD0 near the front; on
+            // newer layouts (v75) the front LODs don't match the v73 anchor pattern, so the first
+            // match can be further in - a bounded window would miss it entirely.
+            int minPos = FindLodMinPos(d, mi.EndOffset, d.Length, mi.BBoxMin, mi.BBoxMax);
             if (minPos < 0) return null;
             m = ReadFromMinPos(d, minPos, hdr.Version);
         }
@@ -136,6 +140,24 @@ public static class OdolLodReader
             MaterialIndex = s.MaterialIndex, CommonTextureIndex = s.CommonTextureIndex,
         }).ToList();
 
+        // Resolve each section's effective texture PATH, then build a de-duplicated texture list and
+        // a per-face index into it. A section names its texture either directly (CommonTextureIndex
+        // into the LOD's Textures[] - the Gravis-pack case) or, typical for vehicles/props with
+        // multi-stage materials, only via its material, whose diffuse (_co) stage texture we use.
+        var matDiffuse = m.Materials.Select(mat => PickDiffuseTexture(mat.StageTextures)).ToList();
+        var texList = new List<string>();
+        var texIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        int SectionTex(OdolSection s)
+        {
+            string path = s.CommonTextureIndex >= 0 && s.CommonTextureIndex < m.Textures.Count
+                ? m.Textures[s.CommonTextureIndex]
+                : (s.MaterialIndex >= 0 && s.MaterialIndex < matDiffuse.Count ? matDiffuse[s.MaterialIndex] : "");
+            if (path.Length == 0) return -1;
+            if (!texIds.TryGetValue(path, out int id)) { id = texList.Count; texList.Add(path); texIds[path] = id; }
+            return id;
+        }
+        var sectionTex = sections.Select(SectionTex).ToList();
+
         return new OdolLodMesh
         {
             Points = m.Points,
@@ -143,18 +165,28 @@ public static class OdolLodReader
             Uv = uv,
             Faces = m.Faces,
             Sections = sections,
-            Textures = m.Textures,
+            Textures = texList,
             Materials = m.Materials.Select(x => x.RvMatName).ToList(),
             NamedSelections = new List<OdolNamedSelection>(), // membership not needed for the mesh itself
             FaceIndexWidth = m.FaceIndexWidth,
-            FaceTextureIndex = FaceTextureIndicesFromSections(m.Faces, sections, m.FaceIndexWidth),
+            FaceTextureIndex = FaceTextureIndicesFromSections(m.Faces, sections, sectionTex, m.FaceIndexWidth),
         };
     }
 
-    /// <summary>Assigns each face its owning section's texture index. Sections cover consecutive
-    /// face blocks; their FaceIndexFrom/To are cumulative memory offsets (stride = width*(1+FaceType)),
-    /// so we walk faces tracking the memory cursor and advance the section as it is crossed.</summary>
-    private static List<int> FaceTextureIndicesFromSections(List<OdolFace> faces, List<OdolSection> sections, int width)
+    /// <summary>Picks a material's diffuse texture from its stage textures: prefer the colour map
+    /// (path ending "_co.paa"), else the first non-empty stage. Empty when the material has none.</summary>
+    private static string PickDiffuseTexture(IReadOnlyList<string> stageTextures)
+    {
+        foreach (var t in stageTextures)
+            if (t.EndsWith("_co.paa", StringComparison.OrdinalIgnoreCase)) return t;
+        return stageTextures.FirstOrDefault(t => t.Length > 0) ?? "";
+    }
+
+    /// <summary>Assigns each face its owning section's resolved texture index (into the mesh's texture
+    /// list). Sections cover consecutive face blocks; their FaceIndexFrom/To are cumulative memory
+    /// offsets (stride = width*(1+FaceType)), so we walk faces tracking the memory cursor and advance
+    /// the section as it is crossed.</summary>
+    private static List<int> FaceTextureIndicesFromSections(List<OdolFace> faces, List<OdolSection> sections, List<int> sectionTex, int width)
     {
         var result = new List<int>(faces.Count);
         if (sections.Count == 0) { for (int i = 0; i < faces.Count; i++) result.Add(-1); return result; }
@@ -162,7 +194,7 @@ public static class OdolLodReader
         foreach (var f in faces)
         {
             while (si < sections.Count - 1 && memOffset >= sections[si].FaceIndexTo) si++;
-            result.Add(sections[si].CommonTextureIndex);
+            result.Add(sectionTex[si]);
             memOffset += width * (1 + f.VertexTableIndex.Length);
         }
         return result;
@@ -343,18 +375,22 @@ public static class OdolLodReader
         m.SectionsEndOffset = p;
 
         // Named selections (hiddenSelections membership). Arrays with count>0 carry a leading
-        // compression-flag byte (the 1024-rule wrapper); on this asset all selection arrays are
-        // tiny/empty so none are actually compressed. NoOfUlongs is always present.
+        // compression-flag byte (0 = raw, else LZO1x). NoOfUlongs is always present.
         int nSel = ReadI32(d, ref p);
         if (nSel is < 0 or > 100000) throw new InvalidDataException($"Implausible nNamedSelections {nSel} at {p - 4}.");
+        // FaceIndexes and VertexTableIndexes use the LOD's vertex-index width (uint32 on v73,
+        // ushort on older ODOL) - the same widening as the face records. Always0/SectionIndex are
+        // ulong, weights are bytes. Larger arrays are LZO-packed (flag byte != 0) - vehicles and
+        // characters have hundreds of named selections whose index arrays exceed the raw threshold.
+        int w = m.FaceIndexWidth;
         for (int i = 0; i < nSel; i++)
         {
             string name = ReadAsciiZ(d, ref p);
-            SkipRuleArray(d, ref p, ReadI32(d, ref p), 2);   // FaceIndexes (ushort)
+            SkipRuleArray(d, ref p, ReadI32(d, ref p), w);   // FaceIndexes (uint32/ushort)
             SkipRuleArray(d, ref p, ReadI32(d, ref p), 4);   // Always0 array (ulong)
             Skip(ref p, 1);                                  // IsSectional (tbool)
             SkipRuleArray(d, ref p, ReadI32(d, ref p), 4);   // SectionIndex (ulong)
-            SkipRuleArray(d, ref p, ReadI32(d, ref p), 2);   // VertexTableIndexes (ushort)
+            SkipRuleArray(d, ref p, ReadI32(d, ref p), w);   // VertexTableIndexes (uint32/ushort)
             SkipRuleArray(d, ref p, ReadI32(d, ref p), 1);   // VerticesWeights (byte)
             m.NamedSelections.Add(name);
         }
@@ -468,18 +504,19 @@ public static class OdolLodReader
         return dec;
     }
 
-    /// <summary>Skips a length-prefixed array subject to the ODOL "1024-byte" compression rule.
-    /// When count &gt; 0 a compression-flag byte precedes the data; here we only handle the
-    /// uncompressed case (flag == 0 and expected size &lt; 1024). Compressed arrays throw until
-    /// LZO decode is wired in.</summary>
+    /// <summary>Skips a length-prefixed array subject to the ODOL compression rule. When count &gt; 0
+    /// a 1-byte compression flag precedes the data: 0 = raw (expected bytes follow); nonzero = LZO1x
+    /// packed (larger named-selection arrays on vehicles/characters hit this). We don't need the
+    /// content - only to advance past it to reach the VertexTable - so a compressed array is decoded
+    /// just to learn its consumed input length (LZO1x is self-terminating), and the output discarded.</summary>
     private static void SkipRuleArray(byte[] d, ref int p, int count, int elemSize)
     {
         if (count <= 0) return;
         long expected = (long)count * elemSize;
-        byte flag = d[p++];                                  // compression flag
-        if (flag != 0 || expected >= 1024)
-            throw new NotSupportedException($"Compressed 1024-rule array (count={count}, elem={elemSize}, flag={flag}) at {p - 1} - LZO decode not yet implemented; see ODOL_FORMAT_SPEC.md.");
-        Skip(ref p, (int)expected);
+        byte flag = d[p++];                                  // compression flag (0 = raw, else LZO1x)
+        if (flag == 0) { Skip(ref p, (int)expected); return; }
+        Lzo1x.Decompress(d, p, (int)expected, out int consumed);
+        p += consumed;
     }
 
     /// <summary>One LodMaterial per ODOL_FORMAT_SPEC.md (ArmA Type 9 layout).</summary>
@@ -518,8 +555,15 @@ public static class OdolLodReader
             Skip(ref p, 4 * 3 * 4);              // Transform[4][3] floats
             T($"      stageXf[{i}] uvSrc={uvSrc} (now at {p})");
         }
-        Skip(ref p, 10);                         // per-material trailer (empirically "03 00 00 00" + 6 zero bytes on v73)
-        T($"    material end at {p}");
+        // Trailing dummy StageTexture (same shape as a stage, incl. the +1 byte). Its PaaTexture is
+        // usually empty - which made a fixed 10-byte skip appear correct on Base_Gravis_Pack (4+1+4+1)
+        // - but some materials (e.g. vehicle thermal/TI: "...default_vehicle_ti_ca.paa") put a real
+        // path here, so it MUST be parsed as an asciiz, not skipped as a fixed 10 bytes.
+        uint dummyFilter = ReadU32(d, ref p);    // TextureFilter
+        string dummyTex = ReadAsciiZ(d, ref p);  // PaaTexture (empty, or e.g. a TI texture path)
+        uint dummyXf = ReadU32(d, ref p);        // TransformIndex
+        Skip(ref p, 1);                          // trailing byte (as on the regular stages)
+        T($"    trailing dummy stage: filter={dummyFilter} '{dummyTex}' xf={dummyXf}; material end at {p}");
         return mat;
     }
 

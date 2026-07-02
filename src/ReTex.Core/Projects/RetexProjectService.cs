@@ -33,6 +33,16 @@ public static class RetexProjectService
     {
         Directory.CreateDirectory(proj.TexturesDir);
 
+        // Build a lookup of source textures already copied into this project so that multiple
+        // entries/selections referencing the same source .paa share one file instead of duplicating
+        // it. Paths are normalized (lowercase, forward slashes, no leading slash) so variant forms
+        // like "\foo\bar.paa" and "foo/bar.paa" map to the same key.
+        var copiedTextures = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in proj.Entries)
+            foreach (var s in e.Selections)
+                if (s.ProjectTexture.Length > 0 && s.SourceTexture.Length > 0)
+                    copiedTextures.TryAdd(NormTex(s.SourceTexture), s.ProjectTexture);
+
         var entry = new RetexEntry
         {
             SourceClass = asset.ClassName,
@@ -86,7 +96,18 @@ public static class RetexProjectService
             };
 
             bool retex = indices is null || indices.Contains(i);
-            if (retex) sel.ProjectTexture = CopySourceTexture(proj, modPboPaths, sel.SourceTexture);
+            if (retex)
+            {
+                var key = NormTex(sel.SourceTexture);
+                if (copiedTextures.TryGetValue(key, out var existing))
+                    sel.ProjectTexture = existing;
+                else
+                {
+                    sel.ProjectTexture = CopySourceTexture(proj, modPboPaths, sel.SourceTexture);
+                    if (sel.ProjectTexture.Length > 0)
+                        copiedTextures[key] = sel.ProjectTexture;
+                }
+            }
             entry.Selections.Add(sel);
         }
 
@@ -102,7 +123,7 @@ public static class RetexProjectService
             if (unitAsset is not null)
             {
                 // Cloned unit carries the same textures and points back at our item.
-                var unitEntry = BuildUniformUnit(proj, entry, unitAsset, modPboPaths);
+                var unitEntry = BuildUniformUnit(proj, entry, unitAsset, modPboPaths, copiedTextures);
                 unitEntry.IsUniformUnit = true;
                 unitEntry.PartnerClass = entry.NewClassName;
                 entry.PartnerClass = unitEntry.NewClassName;
@@ -146,7 +167,7 @@ public static class RetexProjectService
     /// The reciprocal uniformClass link and the class structure are emitted by ConfigGenerator from
     /// the flags/PartnerClass the caller sets - this method only carries selections + textures.
     /// </summary>
-    private static RetexEntry BuildUniformUnit(RetexProject proj, RetexEntry uniformEntry, AssetInfo unitAsset, IReadOnlyList<string> modPboPaths)
+    private static RetexEntry BuildUniformUnit(RetexProject proj, RetexEntry uniformEntry, AssetInfo unitAsset, IReadOnlyList<string> modPboPaths, Dictionary<string, string> copiedTextures)
     {
         var unitEntry = new RetexEntry
         {
@@ -168,10 +189,16 @@ public static class RetexProjectService
                 Name = i < unitAsset.HiddenSelections.Count ? unitAsset.HiddenSelections[i] : "",
                 SourceTexture = src,
             };
-            // Reuse the texture already copied for the item where the source path matches; copy extras.
-            var reuse = uniformEntry.Selections.FirstOrDefault(s => s.ProjectTexture.Length > 0
-                && s.SourceTexture.Equals(src, StringComparison.OrdinalIgnoreCase));
-            sel.ProjectTexture = reuse?.ProjectTexture ?? CopySourceTexture(proj, modPboPaths, src);
+            // Reuse the texture already copied for the item or any prior entry; copy extras.
+            var key = NormTex(src);
+            if (copiedTextures.TryGetValue(key, out var existing))
+                sel.ProjectTexture = existing;
+            else
+            {
+                sel.ProjectTexture = CopySourceTexture(proj, modPboPaths, src);
+                if (sel.ProjectTexture.Length > 0)
+                    copiedTextures[key] = sel.ProjectTexture;
+            }
             unitEntry.Selections.Add(sel);
         }
 
@@ -193,13 +220,87 @@ public static class RetexProjectService
         return Path.Combine("textures", fileName);
     }
 
-    /// <summary>Writes config.cpp (and ensures $PBOPREFIX$) and saves retex.json.</summary>
+    /// <summary>Writes config.cpp (and ensures $PBOPREFIX$) and saves retex.json. Consolidates any
+    /// duplicate copied textures first (see <see cref="ConsolidateTextures"/>) so the generated
+    /// config references only the shared files.</summary>
     public static void GenerateConfig(RetexProject proj)
     {
         Directory.CreateDirectory(proj.AddonDir);
+        ConsolidateTextures(proj);
         File.WriteAllText(Path.Combine(proj.AddonDir, "$PBOPREFIX$"), proj.Prefix);
         File.WriteAllText(proj.ConfigPath, ConfigGenerator.Generate(proj));
         proj.Save();
+    }
+
+    /// <summary>
+    /// Consolidates duplicate copied textures: when several selections were copied from the SAME
+    /// source texture into separate project .paa files (e.g. <c>foo.paa</c> + <c>foo_2.paa</c> - as
+    /// happened in projects made before on-add de-duplication, or when the same texture is shared
+    /// across many models), repoints them at one shared file and deletes the now-orphaned copies.
+    /// Only BYTE-IDENTICAL duplicates are merged: if two copies of one source were edited differently
+    /// they are left untouched, so no hand edit is ever lost. New retextures already share a file on
+    /// add (see <see cref="AddRetexture"/>); this cleans up older/imported projects. Returns the
+    /// number of duplicate files removed. Caller saves.
+    /// </summary>
+    public static int ConsolidateTextures(RetexProject proj)
+    {
+        string Abs(string projRel) => Path.Combine(proj.AddonDir, projRel);
+        IEnumerable<RetexSelection> AllSelections() => proj.Entries.SelectMany(e => e.Selections);
+
+        // Canonical project texture per normalized source (prefer one whose file exists on disk).
+        var canonical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in AllSelections())
+        {
+            if (s.SourceTexture.Length == 0 || s.ProjectTexture.Length == 0) continue;
+            var key = NormTex(s.SourceTexture);
+            if (!canonical.TryGetValue(key, out var cur)) canonical[key] = s.ProjectTexture;
+            else if (!File.Exists(Abs(cur)) && File.Exists(Abs(s.ProjectTexture))) canonical[key] = s.ProjectTexture;
+        }
+
+        // Repoint selections whose file is a byte-identical duplicate of the canonical; track the
+        // files we stopped referencing so only those can be deleted.
+        var freed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in AllSelections())
+        {
+            if (s.SourceTexture.Length == 0 || s.ProjectTexture.Length == 0) continue;
+            var canon = canonical[NormTex(s.SourceTexture)];
+            if (canon.Equals(s.ProjectTexture, StringComparison.OrdinalIgnoreCase)) continue;
+            if (File.Exists(Abs(canon)) && File.Exists(Abs(s.ProjectTexture)) && FilesEqual(Abs(canon), Abs(s.ProjectTexture)))
+            {
+                freed.Add(s.ProjectTexture);
+                s.ProjectTexture = canon;
+            }
+        }
+
+        // Delete freed files that no selection references any more.
+        var referenced = new HashSet<string>(AllSelections().Select(s => s.ProjectTexture)
+            .Where(t => t.Length > 0), StringComparer.OrdinalIgnoreCase);
+        int removed = 0;
+        foreach (var projRel in freed)
+        {
+            if (referenced.Contains(projRel)) continue;
+            try { if (File.Exists(Abs(projRel))) { File.Delete(Abs(projRel)); removed++; } } catch { /* leave it */ }
+        }
+        return removed;
+    }
+
+    /// <summary>Byte-for-byte file comparison (length first, then streamed content).</summary>
+    private static bool FilesEqual(string a, string b)
+    {
+        var fa = new FileInfo(a); var fb = new FileInfo(b);
+        if (fa.Length != fb.Length) return false;
+        using var sa = fa.OpenRead();
+        using var sb = fb.OpenRead();
+        var ba = new byte[65536];
+        var bb = new byte[65536];
+        int n;
+        while ((n = sa.Read(ba, 0, ba.Length)) > 0)
+        {
+            int off = 0;
+            while (off < n) { int k = sb.Read(bb, off, n - off); if (k <= 0) return false; off += k; }
+            for (int i = 0; i < n; i++) if (ba[i] != bb[i]) return false;
+        }
+        return true;
     }
 
     /// <summary>
@@ -258,6 +359,11 @@ public static class RetexProjectService
             $"name = \"ReTex - {proj.Name}\";\nauthor = \"{proj.Author}\";\n");
         return await tool.PackAsync(proj.AddonDir, addonsOut, ct);
     }
+
+    /// <summary>Normalizes a source texture path for dictionary keying: lowercase, forward slashes,
+    /// no leading slash. Ensures "\foo\bar.paa" and "foo/bar.paa" resolve to the same key.</summary>
+    private static string NormTex(string path) =>
+        path.Replace('\\', '/').TrimStart('/').ToLowerInvariant();
 
     private static string UniqueClassName(RetexProject proj, string baseName)
     {

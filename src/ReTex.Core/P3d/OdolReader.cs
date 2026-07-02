@@ -45,15 +45,42 @@ public static class OdolReader
         int version = ReadI32(d, ref pos);
         _ = ReadU32(d, ref pos);          // appID
         _ = ReadAsciiZ(d, ref pos);       // muzzleFlash / p3d prefix
-        int lodCount = ReadI32(d, ref pos);
 
-        if (lodCount is < 0 or > 1000)
-            throw new InvalidDataException($"Implausible LOD count {lodCount}; header layout mismatch for v{version}.");
+        // The LOD count follows, then that many float resolutions. Newer ODOL (v74/v75+) inserts
+        // extra header fields here (empirically +8 bytes on v75), shifting the count. Rather than
+        // hardcode a version threshold, locate the count by validation: the value must be a small
+        // positive int followed by exactly that many finite, non-negative resolutions. Try the
+        // v73 position first, then the shifted one.
+        int lodCount = -1;
+        foreach (int at in new[] { pos, pos + 8 })
+        {
+            int n = TryReadLodCount(d, at);
+            if (n >= 0) { pos = at; lodCount = n; break; }
+        }
+        if (lodCount < 0)
+            throw new InvalidDataException($"Could not locate a valid LOD count near offset {pos}; header layout mismatch for v{version}.");
 
+        pos += 4;                         // consume the count
         var res = new float[lodCount];
         for (int i = 0; i < lodCount; i++) res[i] = ReadF32(d, ref pos);
 
         return new OdolHeader { Version = version, LodCount = lodCount, Resolutions = res, HeaderEndOffset = pos };
+    }
+
+    /// <summary>Returns the LOD count at <paramref name="at"/> if it's a plausible count (1..2000)
+    /// followed by that many finite, non-negative float resolutions; else -1. Used to locate the
+    /// count across ODOL header-layout versions.</summary>
+    private static int TryReadLodCount(byte[] d, int at)
+    {
+        if (at < 0 || at + 4 > d.Length) return -1;
+        int n = BitConverter.ToInt32(d, at);
+        if (n is < 1 or > 2000 || at + 4 + (long)n * 4 > d.Length) return -1;
+        for (int i = 0; i < n; i++)
+        {
+            float r = BitConverter.ToSingle(d, at + 4 + i * 4);
+            if (float.IsNaN(r) || float.IsInfinity(r) || r < 0) return -1;
+        }
+        return n;
     }
 
     /// <summary>

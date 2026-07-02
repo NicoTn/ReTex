@@ -110,6 +110,37 @@ if (args.Length >= 2 && args[0] == "--p3dmesh")
     return 0;
 }
 
+// Diagnose WHY a p3d fails to decode: Probe --p3ddiag <file>
+if (args.Length >= 2 && args[0] == "--p3ddiag")
+{
+    var d = File.ReadAllBytes(args[1]);
+    if (!ReTex.Core.P3d.OdolReader.IsOdol(d))
+    {
+        Console.WriteLine(ReTex.Core.P3d.MlodReader.IsMlod(d) ? "MLOD file" : "not ODOL/MLOD");
+        return 0;
+    }
+    var hdr = ReTex.Core.P3d.OdolReader.ReadHeader(d);
+    var mi = ReTex.Core.P3d.OdolReader.ReadModelInfo(d, hdr.HeaderEndOffset, hdr.Version);
+    Console.WriteLine($"ODOL v{hdr.Version}  bbox min=({string.Join(",", mi.BBoxMin)}) max=({string.Join(",", mi.BBoxMax)})  modelInfoEnd={mi.EndOffset}");
+    Console.WriteLine($"LODs={hdr.LodCount}  resolutions=[{string.Join(", ", hdr.Resolutions.Select(r => r.ToString("g4")))}]  visualIdx=[{string.Join(",", hdr.VisualLodIndices)}]");
+    int minPos = ReTex.Core.P3d.OdolLodReader.FindLodMinPos(d, mi.EndOffset, Math.Min(d.Length, mi.EndOffset + 200_000), mi.BBoxMin, mi.BBoxMax);
+    Console.WriteLine($"FindLodMinPos (200KB window) -> {minPos}");
+    if (minPos < 0)
+    {
+        int wide = ReTex.Core.P3d.OdolLodReader.FindLodMinPos(d, mi.EndOffset, d.Length, mi.BBoxMin, mi.BBoxMax);
+        Console.WriteLine($"FindLodMinPos (whole file) -> {wide}");
+        if (wide >= 0) minPos = wide; else return 0;
+    }
+    try
+    {
+        var m = ReTex.Core.P3d.OdolLodReader.ReadFromMinPos(d, minPos, hdr.Version);
+        Console.WriteLine($"ReadFromMinPos OK: faces={m.FaceCount} sections={m.Sections.Count} nUV-note check VertexTableError below");
+        Console.WriteLine($"VertexTableError: {m.VertexTableError ?? "(none)"}  points={(m.Points?.Length.ToString() ?? "null")}");
+    }
+    catch (Exception ex) { Console.WriteLine($"ReadFromMinPos THREW: {ex.GetType().Name}: {ex.Message}"); }
+    return 0;
+}
+
 // Forward-parse a LOD from a known MinPos offset (textures + materials), report where it
 // lands (should be NoOfFaces): Probe --p3dminpos <file> <minPosOffset>
 if (args.Length >= 3 && args[0] == "--p3dminpos")
@@ -499,6 +530,88 @@ if (args.Length >= 2 && args[0] == "--modpbos")
     Console.WriteLine($"Total assets: {all.Count} across {all.Select(a => a.SourcePbo).Distinct().Count()} PBOs");
     foreach (var g in all.GroupBy(a => Path.GetFileName(a.SourcePbo)).OrderByDescending(g => g.Count()))
         Console.WriteLine($"  {g.Key,-40} {g.Count()}");
+    return 0;
+}
+
+// Test texture de-duplication in AddRetexture: Probe --deduptest <pbo> <srcTexA> <srcTexB-sharedWithA>
+if (args.Length >= 3 && args[0] == "--deduptest")
+{
+    var pbo = args[1];
+    var texShared = args[2];                 // used by selections 0 AND 2
+    var texOther = args.Length > 3 ? args[3] : args[2];
+    var tmp = Path.Combine(Path.GetTempPath(), "retex_deduptest_" + Guid.NewGuid().ToString("N")[..8]);
+    var dproj = ReTex.Core.Projects.RetexProjectService.CreateProject(tmp, "DedupTest");
+    var dasset = new ReTex.Core.Assets.AssetInfo
+    {
+        ClassName = "TestHelmet",
+        Category = ReTex.Core.Assets.AssetCategory.Equipment,
+        HiddenSelections = new[] { "camo", "camo2", "eyes" },
+        HiddenSelectionsTextures = new[] { texShared, texOther, texShared },
+    };
+    var e = ReTex.Core.Projects.RetexProjectService.AddRetexture(dproj, dasset, new[] { pbo }, copyValues: false);
+    Console.WriteLine("model 1:");
+    foreach (var s in e.Selections)
+        Console.WriteLine($"  sel[{s.Index}] {s.Name,-6} src={Path.GetFileName(s.SourceTexture.Replace('\\','/'))} -> project='{s.ProjectTexture}'");
+    // Second "model" sharing the same source texture (cross-model dedup).
+    var dasset2 = new ReTex.Core.Assets.AssetInfo
+    {
+        ClassName = "TestHelmet2",
+        Category = ReTex.Core.Assets.AssetCategory.Equipment,
+        HiddenSelections = new[] { "camo" },
+        HiddenSelectionsTextures = new[] { texShared },
+    };
+    var e2 = ReTex.Core.Projects.RetexProjectService.AddRetexture(dproj, dasset2, new[] { pbo }, copyValues: false);
+    Console.WriteLine($"model 2: sel[0] camo -> project='{e2.Selections[0].ProjectTexture}'");
+    var files = Directory.Exists(dproj.TexturesDir) ? Directory.GetFiles(dproj.TexturesDir).Select(Path.GetFileName).ToList() : new List<string?>();
+    Console.WriteLine($"files on disk ({files.Count}): {string.Join(", ", files)}");
+    bool ok = e.Selections[0].ProjectTexture == e.Selections[2].ProjectTexture
+              && e.Selections[0].ProjectTexture == e2.Selections[0].ProjectTexture
+              && e.Selections[0].ProjectTexture.Length > 0;
+    Console.WriteLine(ok ? "DEDUP OK (within-model AND cross-model share one file)" : "DEDUP FAILED");
+    try { Directory.Delete(tmp, true); } catch { }
+    return 0;
+}
+
+// Test texture consolidation of an existing project with duplicate files: Probe --consolidatetest
+if (args.Length >= 1 && args[0] == "--consolidatetest")
+{
+    var tmp = Path.Combine(Path.GetTempPath(), "retex_constest_" + Guid.NewGuid().ToString("N")[..8]);
+    var cp = ReTex.Core.Projects.RetexProjectService.CreateProject(tmp, "ConsTest");
+    // Two identical copies of one source (should merge) + one edited-differently copy (should stay).
+    File.WriteAllBytes(Path.Combine(cp.TexturesDir, "foo_co.paa"), new byte[] { 1, 2, 3, 4 });
+    File.WriteAllBytes(Path.Combine(cp.TexturesDir, "foo_co_2.paa"), new byte[] { 1, 2, 3, 4 }); // identical -> merge
+    File.WriteAllBytes(Path.Combine(cp.TexturesDir, "foo_co_3.paa"), new byte[] { 9, 9, 9, 9 }); // different -> keep
+    ReTex.Core.Projects.RetexSelection Sel(string src, string proj) => new() { Name = "camo", SourceTexture = src, ProjectTexture = proj };
+    cp.Entries.Add(new ReTex.Core.Projects.RetexEntry { NewClassName = "A", Selections = { Sel("mod\\foo_co.paa", "textures\\foo_co.paa") } });
+    cp.Entries.Add(new ReTex.Core.Projects.RetexEntry { NewClassName = "B", Selections = { Sel("mod\\foo_co.paa", "textures\\foo_co_2.paa") } });
+    cp.Entries.Add(new ReTex.Core.Projects.RetexEntry { NewClassName = "C", Selections = { Sel("mod\\foo_co.paa", "textures\\foo_co_3.paa") } });
+    int removed = ReTex.Core.Projects.RetexProjectService.ConsolidateTextures(cp);
+    foreach (var e in cp.Entries)
+        Console.WriteLine($"  {e.NewClassName} -> {e.Selections[0].ProjectTexture}");
+    var left = Directory.GetFiles(cp.TexturesDir).Select(Path.GetFileName).OrderBy(x => x).ToList();
+    Console.WriteLine($"removed={removed}; files left: {string.Join(", ", left)}");
+    bool ok = cp.Entries[0].Selections[0].ProjectTexture == "textures\\foo_co.paa"
+              && cp.Entries[1].Selections[0].ProjectTexture == "textures\\foo_co.paa"   // merged
+              && cp.Entries[2].Selections[0].ProjectTexture == "textures\\foo_co_3.paa" // kept (different)
+              && removed == 1 && !left.Contains("foo_co_2.paa") && left.Contains("foo_co_3.paa");
+    Console.WriteLine(ok ? "CONSOLIDATE OK" : "CONSOLIDATE FAILED");
+    try { Directory.Delete(tmp, true); } catch { }
+    return 0;
+}
+
+// Headless textured render of a p3d's visual LOD: Probe --p3drender <p3d> <paa> <out.png> [axis=z] [flipv]
+if (args.Length >= 4 && args[0] == "--p3drender")
+{
+    var meshBytes = File.ReadAllBytes(args[1]);
+    var mesh = OdolLodReader.ReadAnyVisualLod(meshBytes);
+    if (mesh is null) { Console.WriteLine("mesh decode returned null"); return 1; }
+    var tex = ReTex.Core.Paa.PaaImage.LoadFile(args[2]);
+    char axis = args.Length > 4 && args[4].Length > 0 ? char.ToLower(args[4][0]) : 'z';
+    bool flipV = args.Any(a => a.Equals("flipv", StringComparison.OrdinalIgnoreCase));
+    int W = 700, H = 700;
+    var rgba = Probe.SoftRender.Render(mesh, tex, W, H, axis, flipV);
+    Probe.Png.Write(args[3], W, H, rgba);
+    Console.WriteLine($"Rendered {mesh.Points.Length} pts / {mesh.Faces.Count} faces, tex {tex.Width}x{tex.Height}, axis={axis}, flipV={flipV} -> {args[3]}");
     return 0;
 }
 
