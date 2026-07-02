@@ -3,10 +3,12 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
+using System.Windows.Media.Media3D;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ReTex.Core.Assets;
 using ReTex.Core.Mods;
+using ReTex.Core.P3d;
 using ReTex.Core.Paa;
 using ReTex.Core.Pbo;
 using ReTex.Core.Projects;
@@ -33,6 +35,8 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private AssetInfo? _selectedAsset;
     [ObservableProperty] private BitmapSource? _previewImage;
     [ObservableProperty] private string _previewInfo = "";
+    [ObservableProperty] private Model3DGroup? _previewModel3D;
+    [ObservableProperty] private string _previewModelInfo = "";
     [ObservableProperty] private string _assetSearch = "";
     public ObservableCollection<SelectionChoice> AssetSelections { get; } = new();
     [ObservableProperty] private string _categoryFilter = "All";
@@ -156,6 +160,7 @@ public partial class MainViewModel : ObservableObject
     partial void OnSelectedAssetChanged(AssetInfo? value)
     {
         LoadPreviewCommand.Execute(null);
+        _ = LoadPreviewModel(value?.Model, null); // browse flow: source model, default textures
 
         AssetSelections.Clear();
         if (value is null) return;
@@ -265,8 +270,21 @@ public partial class MainViewModel : ObservableObject
             RefreshEntries();
             ConfigText = File.Exists(_project.ConfigPath) ? File.ReadAllText(_project.ConfigPath) : "";
             Status = $"Opened {_project.Name} ({_project.Entries.Count} retextures)";
+            WarnIfMissingTextures(_project);
         }
         catch (Exception ex) { Status = $"Open failed: {ex.Message}"; }
+    }
+
+    /// <summary>
+    /// Surfaces entries whose ProjectTexture no longer exists on disk - config.cpp would still
+    /// reference the path and the PBO would pack "successfully" with that retexture silently
+    /// missing in-game (see RetexProjectService.FindMissingTextures).
+    /// </summary>
+    private void WarnIfMissingTextures(RetexProject proj)
+    {
+        var missing = RetexProjectService.FindMissingTextures(proj);
+        if (missing.Count == 0) return;
+        Status += $"  ⚠ {missing.Count} texture reference(s) point at missing files: {string.Join("; ", missing)}";
     }
 
     partial void OnSelectedEntryChanged(RetexEntry? value)
@@ -274,6 +292,57 @@ public partial class MainViewModel : ObservableObject
         if (_project is null || value is null) return;
         var rel = value.Selections.FirstOrDefault(s => s.ProjectTexture.Length > 0)?.ProjectTexture;
         if (rel is not null) _ = LoadProjectPreview(Path.Combine(_project.AddonDir, rel));
+        _ = LoadPreviewModel(value.SourceModel, value.Selections); // project flow: retexture applied
+    }
+
+    /// <summary>Builds the 3D model preview off the UI thread: extracts the .p3d from the source
+    /// mod's PBOs, decodes it (<see cref="OdolLodReader.ReadVisualLod"/>), maps sections to resolved
+    /// textures (<see cref="OdolMeshPreview"/>), and builds a frozen <see cref="Model3DGroup"/>.
+    /// Falls back with an explanatory message when the model can't be extracted or decoded, leaving
+    /// the flat texture tab as the reliable preview.</summary>
+    private async Task LoadPreviewModel(string? modelVirtualPath, IReadOnlyList<RetexSelection>? selections)
+    {
+        PreviewModel3D = null;
+        PreviewModelInfo = "";
+        var mod = SelectedMod;
+        if (mod is null || string.IsNullOrWhiteSpace(modelVirtualPath)) { PreviewModelInfo = "(select the source mod to preview the model)"; return; }
+        var pboPaths = mod.PboPaths;
+        string? addonDir = _project?.AddonDir;
+        try
+        {
+            var (model, info) = await Task.Run(() =>
+            {
+                var bytes = VirtualFileService.Extract(pboPaths, modelVirtualPath!);
+                if (bytes is null) return ((Model3DGroup?)null, "(model not found in the selected mod)");
+                var mesh = OdolLodReader.ReadAnyVisualLod(bytes);
+                if (mesh is null) return (null, "(3D preview not available for this model format — see the texture tab)");
+                var groups = OdolMeshPreview.BuildGroups(mesh, selections, addonDir);
+                var m3d = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, pboPaths));
+                string name = Path.GetFileName(modelVirtualPath!.Replace('\\', '/'));
+                return (m3d, $"{name}  {mesh.Points.Length} verts · {mesh.Faces.Count} faces · {groups.Count} texture group(s)");
+            });
+            PreviewModel3D = model;
+            PreviewModelInfo = info;
+        }
+        catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
+    }
+
+    /// <summary>Loads the pixels for a resolved preview texture: a project .paa from disk when the
+    /// section was retextured, else the model's default texture extracted from the source PBOs.</summary>
+    private static BitmapSource? LoadPreviewTexture(PreviewTexture tex, IReadOnlyList<string> pboPaths)
+    {
+        try
+        {
+            if (tex.ProjectFilePath != null && File.Exists(tex.ProjectFilePath))
+                return ImageHelper.ToBitmap(PaaImage.LoadFile(tex.ProjectFilePath));
+            if (tex.SourceVirtualPath.Length > 0)
+            {
+                var bytes = VirtualFileService.Extract(pboPaths, tex.SourceVirtualPath);
+                if (bytes != null) return ImageHelper.ToBitmap(PaaImage.Load(bytes));
+            }
+        }
+        catch { /* fall back to flat colour in ModelViewHelper */ }
+        return null;
     }
 
     private async Task LoadProjectPreview(string path)
@@ -353,6 +422,7 @@ public partial class MainViewModel : ObservableObject
         RetexProjectService.GenerateConfig(_project);
         ConfigText = File.ReadAllText(_project.ConfigPath);
         Status = "Regenerated config from project entries (manual edits overwritten).";
+        WarnIfMissingTextures(_project);
     }
 
     private void RefreshEntries()
@@ -396,5 +466,6 @@ public partial class MainViewModel : ObservableObject
         Status = res.Success
             ? $"Packed mod -> {RetexProjectService.ModFolder(_project)}"
             : $"Pack failed (exit {res.ExitCode}): {res.StdErr}";
+        if (res.Success) WarnIfMissingTextures(_project);
     }
 }

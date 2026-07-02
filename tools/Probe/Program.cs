@@ -3,6 +3,8 @@ using ReTex.Core.Mods;
 using ReTex.Core.P3d;
 using ReTex.Core.Projects;
 
+System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+
 // Quick p3d header probe: Probe --p3d <file>
 if (args.Length >= 2 && args[0] == "--p3d")
 {
@@ -18,6 +20,352 @@ if (args.Length >= 2 && args[0] == "--p3d")
     Console.WriteLine($"  bbox: [{string.Join(",", mi.BBoxMin)}] .. [{string.Join(",", mi.BBoxMax)}]");
     foreach (var (b, par) in mi.Bones.Take(4)) Console.WriteLine($"    {b} -> {(par.Length == 0 ? "(root)" : par)}");
     Console.WriteLine($"  ModelInfo ends at offset {mi.EndOffset}");
+    return 0;
+}
+
+// Search for a raw int32 value anywhere in a byte range: Probe --findint <file> <from> <to> <value>
+if (args.Length >= 5 && args[0] == "--findint")
+{
+    var fid = File.ReadAllBytes(args[1]);
+    int fiFrom = int.Parse(args[2]), fiTo = int.Parse(args[3]), fiVal = int.Parse(args[4]);
+    int fiHits = 0;
+    for (int p = fiFrom; p + 4 <= fiTo && p + 4 <= fid.Length; p++)
+    {
+        if (BitConverter.ToInt32(fid, p) == fiVal) { Console.WriteLine($"MATCH at offset {p} (0x{p:X6})"); fiHits++; }
+    }
+    Console.WriteLine($"{fiHits} match(es) for int value {fiVal} (byte-unaligned scan)");
+    return 0;
+}
+
+// Search for a run of N floats matching given approximate values anywhere in the file:
+// Probe --findfloats <file> <tolerance> <v1> <v2> ...
+if (args.Length >= 4 && args[0] == "--findfloats")
+{
+    var ffd = File.ReadAllBytes(args[1]);
+    float tol = float.Parse(args[2], System.Globalization.CultureInfo.InvariantCulture);
+    var targets = args.Skip(3).Select(a => float.Parse(a, System.Globalization.CultureInfo.InvariantCulture)).ToArray();
+    int hits = 0;
+    for (int p = 0; p + targets.Length * 4 <= ffd.Length; p += 4)
+    {
+        bool ok = true;
+        for (int i = 0; i < targets.Length && ok; i++)
+        {
+            float f = BitConverter.ToSingle(ffd, p + i * 4);
+            if (float.IsNaN(f) || float.IsInfinity(f) || Math.Abs(f - targets[i]) > tol) ok = false;
+        }
+        if (ok) { Console.WriteLine($"MATCH at offset {p} (0x{p:X6})"); hits++; }
+    }
+    Console.WriteLine($"{hits} match(es) for tolerance {tol}");
+    return 0;
+}
+
+// Scan raw floats/ints from an offset to visually spot plausible bbox/count values:
+// Probe --scanfloats <file> <offset> <count>
+if (args.Length >= 4 && args[0] == "--scanfloats")
+{
+    var sfd = File.ReadAllBytes(args[1]);
+    int sfOff = int.Parse(args[2]), sfCount = int.Parse(args[3]);
+    for (int i = 0; i < sfCount; i++)
+    {
+        int p = sfOff + i * 4;
+        float f = BitConverter.ToSingle(sfd, p);
+        int iv = BitConverter.ToInt32(sfd, p);
+        Console.WriteLine($"+{i * 4,3} (abs {p:X6}): int={iv,12}  float={f}");
+    }
+    return 0;
+}
+
+// Build render-ready texture groups from a mesh (Phase 2). Optional 4th arg = source texture to
+// simulate retexturing (mapped to a fake project path). Probe --p3dgroups <file> [srcTexToRetex]
+if (args.Length >= 2 && args[0] == "--p3dgroups")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(d);
+    if (mesh == null) { Console.WriteLine("could not decode a visual LOD."); return 0; }
+    List<ReTex.Core.Projects.RetexSelection>? sels = null;
+    if (args.Length >= 3)
+        sels = new() { new ReTex.Core.Projects.RetexSelection { Name = "test", SourceTexture = args[2], ProjectTexture = "textures\\new_co.paa" } };
+    var groups = ReTex.Core.P3d.OdolMeshPreview.BuildGroups(mesh, sels, @"C:\proj\addons\main");
+    Console.WriteLine($"{groups.Count} texture group(s) from {mesh.Faces.Count} faces:");
+    foreach (var g in groups)
+        Console.WriteLine($"  {g.FaceIndices.Count} faces -> src='{g.Texture.SourceVirtualPath}' retex={g.Texture.IsRetextured} proj='{g.Texture.ProjectFilePath}' missing={g.Texture.Missing}");
+    Console.WriteLine($"total grouped faces: {groups.Sum(g => g.FaceIndices.Count)} (expect {mesh.Faces.Count})");
+    return 0;
+}
+
+// Fully-automatic: locate + decode the highest-detail visual LOD into a render-ready mesh.
+// Probe --p3dmesh <file>
+if (args.Length >= 2 && args[0] == "--p3dmesh")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(d);
+    if (mesh == null) { Console.WriteLine("could not decode a visual LOD."); return 0; }
+    Console.WriteLine($"points={mesh.Points.Length}, normals={mesh.Normals.Length}, uv={mesh.Uv.Length}, faces={mesh.Faces.Count}, sections={mesh.Sections.Count}");
+    Console.WriteLine($"textures: {string.Join(" | ", mesh.Textures)}");
+    Console.WriteLine($"materials: {string.Join(" | ", mesh.Materials)}");
+    foreach (var s in mesh.Sections)
+        Console.WriteLine($"  section faces[{s.FaceIndexFrom}..{s.FaceIndexTo}] tex={s.CommonTextureIndex} mat={s.MaterialIndex}");
+    for (int i = 0; i < Math.Min(3, mesh.Points.Length); i++)
+        Console.WriteLine($"  pt[{i}]=({string.Join(",", mesh.Points[i])}) uv=({(mesh.Uv.Length > i ? string.Join(",", mesh.Uv[i]) : "-")}) n=({(mesh.Normals.Length > i ? string.Join(",", mesh.Normals[i]) : "-")})");
+    return 0;
+}
+
+// Forward-parse a LOD from a known MinPos offset (textures + materials), report where it
+// lands (should be NoOfFaces): Probe --p3dminpos <file> <minPosOffset>
+if (args.Length >= 3 && args[0] == "--p3dminpos")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var hdr = OdolReader.ReadHeader(d);
+    int mp = int.Parse(args[2]);
+    ReTex.Core.P3d.OdolLodReader.Trace = args.Contains("--trace");
+    var m = ReTex.Core.P3d.OdolLodReader.ReadFromMinPos(d, mp, hdr.Version);
+    Console.WriteLine($"MinPos [{string.Join(",", m.MinPos)}] Max [{string.Join(",", m.MaxPos)}] sphere {m.Sphere}");
+    Console.WriteLine($"textures ({m.Textures.Count}): {string.Join(" | ", m.Textures)}");
+    foreach (var mat in m.Materials)
+        Console.WriteLine($"  material '{mat.RvMatName}' type={mat.Type} ps={mat.PixelShaderId} vs={mat.VertexShaderId} surf='{mat.BiSurfaceName}' stageTex=[{string.Join(", ", mat.StageTextures)}]");
+    Console.WriteLine($"materials end at offset {m.MaterialsEndOffset} (0x{m.MaterialsEndOffset:X})");
+    Console.WriteLine($"faces: {m.FaceCount} (tri={m.TriCount} quad={m.QuadCount}), allocSize={m.FacesAllocationSize} (expect 8*tri+10*quad={8 * m.TriCount + 10 * m.QuadCount})");
+    Console.WriteLine($"  faces span {m.FacesStartOffset}..{m.FacesEndOffset} ({m.FacesEndOffset - m.FacesStartOffset} bytes; expect 7*tri+9*quad={7 * m.TriCount + 9 * m.QuadCount})");
+    Console.WriteLine($"sections: {m.Sections.Count}");
+    foreach (var sec in m.Sections)
+        Console.WriteLine($"  section faceMem[{sec.FaceMemFrom}..{sec.FaceMemTo}] texIndex={sec.CommonTextureIndex} matIndex={sec.MaterialIndex}");
+    Console.WriteLine($"sections end at {m.SectionsEndOffset} (0x{m.SectionsEndOffset:X})");
+    Console.WriteLine($"named selections ({m.NamedSelections.Count}): {string.Join(", ", m.NamedSelections)}");
+    Console.WriteLine($"  selections end at {m.SelectionsEndOffset} (0x{m.SelectionsEndOffset:X})");
+    Console.WriteLine($"named properties ({m.NamedProperties.Count}): {string.Join(", ", m.NamedProperties.Select(t => $"{t.Prop}={t.Value}"))}");
+    Console.WriteLine($"  tokens end at {m.TokensEndOffset} (0x{m.TokensEndOffset:X})");
+    int maxVi = m.Faces.SelectMany(f => f.VertexTableIndex).DefaultIfEmpty(0).Max();
+    Console.WriteLine($"max vertex-table index referenced by faces: {maxVi} (=> expect NoOfPoints {maxVi + 1})");
+    Console.WriteLine($"sizeOfVertexTable={m.SizeOfVertexTable}, VertexTable starts at {m.VertexTableStartOffset} (0x{m.VertexTableStartOffset:X})");
+    if (m.VertexTableError != null)
+        Console.WriteLine($"  VertexTable decode ERROR: {m.VertexTableError}");
+    else
+    {
+        Console.WriteLine($"  decoded {m.Points?.Length ?? 0} points, uvScale=[{string.Join(",", m.UvScale ?? new float[0])}], VertexTable ends at {m.VertexTableEndOffset} (expected ~{m.VertexTableStartOffset - 4 + m.SizeOfVertexTable})");
+        for (int i = 0; i < Math.Min(4, m.Points?.Length ?? 0); i++)
+            Console.WriteLine($"    pt[{i}] ({string.Join(", ", m.Points![i])})");
+    }
+    return 0;
+}
+
+// Try LZO-decompressing an array at an offset and interpret the output as float triplets:
+// Probe --lzotest <file> <offset> <count> <elemBytes>
+if (args.Length >= 5 && args[0] == "--lzotest")
+{
+    var d = File.ReadAllBytes(args[1]);
+    int off = int.Parse(args[2]), count = int.Parse(args[3]), elem = int.Parse(args[4]);
+    int outLen = count * elem;
+    var outBuf = ReTex.Core.P3d.LzoUtil.DecompressAll(d, off, Math.Max(outLen, 200000), out int consumed);
+    Console.WriteLine($"natural output={outBuf.Length} bytes, consumed={consumed} input bytes (next at {off + consumed}); asked {outLen}");
+    int show = Math.Min(outBuf.Length / Math.Max(elem, 1), 6);
+    for (int i = 0; i < show; i++)
+    {
+        if (elem == 12)
+            Console.WriteLine($"  [{i}] ({BitConverter.ToSingle(outBuf, i * 12)}, {BitConverter.ToSingle(outBuf, i * 12 + 4)}, {BitConverter.ToSingle(outBuf, i * 12 + 8)})");
+        else if (elem == 4)
+            Console.WriteLine($"  [{i}] u32=0x{BitConverter.ToUInt32(outBuf, i * 4):X8} f={BitConverter.ToSingle(outBuf, i * 4)}");
+    }
+    return 0;
+}
+
+// Diagnostic: LZO1X decode to natural end marker, report output size + consumed + first floats:
+// Probe --lzonat <file> <offset>
+if (args.Length >= 3 && args[0] == "--lzonat")
+{
+    var d = File.ReadAllBytes(args[1]);
+    int off = int.Parse(args[2]);
+    bool ok = ReTex.Core.P3d.Lzo1x.TryDecodeNatural(d, off, 400000, out int outSize, out int consumed, out var buf);
+    if (ok)
+        Console.WriteLine($"natural block: outSize={outSize}, consumed={consumed} (next at {off + consumed}); /12={outSize / 12.0:F2} /4={outSize / 4.0:F2}");
+    else
+        Console.WriteLine("ran off buffer before an end marker.");
+    Console.WriteLine($"  first 16 output bytes: {string.Join(" ", buf.Take(16).Select(b => b.ToString("X2")))}");
+    return 0;
+}
+
+// Faithful LZO1X decode (returns consumed bytes) of an array at an offset:
+// Probe --lzo1x <file> <offset> <count> <elemBytes>
+if (args.Length >= 5 && args[0] == "--lzo1x")
+{
+    var d = File.ReadAllBytes(args[1]);
+    int off = int.Parse(args[2]), count = int.Parse(args[3]), elem = int.Parse(args[4]);
+    int outLen = count * elem;
+    try
+    {
+        var outBuf = ReTex.Core.P3d.Lzo1x.Decompress(d, off, outLen, out int consumed);
+        Console.WriteLine($"OK: filled {outLen} bytes, consumed {consumed} input bytes (next at {off + consumed}).");
+        int show = Math.Min(count, 6);
+        for (int i = 0; i < show; i++)
+        {
+            if (elem == 12)
+                Console.WriteLine($"  [{i}] ({BitConverter.ToSingle(outBuf, i * 12)}, {BitConverter.ToSingle(outBuf, i * 12 + 4)}, {BitConverter.ToSingle(outBuf, i * 12 + 8)})");
+            else if (elem == 4)
+                Console.WriteLine($"  [{i}] u32=0x{BitConverter.ToUInt32(outBuf, i * 4):X8}");
+        }
+    }
+    catch (Exception ex) { Console.WriteLine($"FAILED: {ex.Message}"); }
+    return 0;
+}
+
+// Scan for a run of N consecutive ascending uint32 values that all look like plausible
+// file offsets (in [minVal, fileSize]) - used to locate StartAddressOfLods/EndAddressOfLods.
+// Probe --scanoffsets <file> <from> <to> <runLen> [minVal]
+if (args.Length >= 5 && args[0] == "--scanoffsets")
+{
+    var od = File.ReadAllBytes(args[1]);
+    int oFrom = int.Parse(args[2]), oTo = Math.Min(int.Parse(args[3]), od.Length);
+    int runLen = int.Parse(args[4]);
+    long minVal = args.Length >= 6 ? long.Parse(args[5]) : 1;
+    long fsize = od.Length;
+    int oHits = 0;
+    for (int p = oFrom; p + runLen * 4 <= oTo; p++)
+    {
+        bool ok = true;
+        uint prev = 0;
+        for (int i = 0; i < runLen && ok; i++)
+        {
+            uint v = BitConverter.ToUInt32(od, p + i * 4);
+            if (v < minVal || v > fsize || (i > 0 && v < prev)) ok = false;
+            prev = v;
+        }
+        if (ok)
+        {
+            var vals = Enumerable.Range(0, runLen).Select(i => BitConverter.ToUInt32(od, p + i * 4));
+            Console.WriteLine($"RUN at {p} (0x{p:X6}): {string.Join(", ", vals)}");
+            oHits++;
+        }
+    }
+    Console.WriteLine($"{oHits} ascending-offset run(s) of length {runLen} in [{minVal},{fsize}]");
+    return 0;
+}
+
+// Raw hex dump: Probe --hexdump <file> <offset> <len>
+if (args.Length >= 4 && args[0] == "--hexdump")
+{
+    var hd = File.ReadAllBytes(args[1]);
+    int off = int.Parse(args[2]), len = int.Parse(args[3]);
+    for (int i = 0; i < len; i += 16)
+    {
+        var chunk = hd.Skip(off + i).Take(Math.Min(16, len - i)).ToArray();
+        var hex = string.Join(" ", chunk.Select(b => b.ToString("X2")));
+        var ascii = new string(chunk.Select(b => b is >= 32 and < 127 ? (char)b : '.').ToArray());
+        Console.WriteLine($"{off + i:X6}: {hex,-48} {ascii}");
+    }
+    return 0;
+}
+
+// Probe LOD skeleton counts (proxies/items/bonelinks/textures/materials/faces) without
+// decoding vertex data yet: Probe --p3dlod <file> [lodIndex]
+if (args.Length >= 2 && args[0] == "--p3dlod")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var hdr = OdolReader.ReadHeader(d);
+    var mi = OdolReader.ReadModelInfo(d, hdr.HeaderEndOffset, hdr.Version);
+    Console.WriteLine($"ODOL v{hdr.Version}, {hdr.LodCount} LODs, visual: {string.Join(",", hdr.VisualLodIndices)}");
+    Console.WriteLine($"ModelInfo ends at {mi.EndOffset}, bbox [{string.Join(",", mi.BBoxMin)}] .. [{string.Join(",", mi.BBoxMax)}]");
+
+    int want = args.Length >= 3 ? int.Parse(args[2]) : -1;
+    int pos = mi.EndOffset;
+    for (int i = 0; i < hdr.LodCount; i++)
+    {
+        if (want >= 0 && i != want) { Console.WriteLine($"[{i}] resolution {hdr.Resolutions[i]} - skipped (use lodIndex to target)"); continue; }
+        try
+        {
+            var sk = ReTex.Core.P3d.OdolLodReader.ReadSkeleton(d, pos, hdr.Version);
+            Console.WriteLine($"[{i}] resolution {hdr.Resolutions[i]}:");
+            Console.WriteLine($"  bbox [{string.Join(",", sk.MinPos)}] .. [{string.Join(",", sk.MaxPos)}], sphere {sk.Sphere}");
+            Console.WriteLine($"  textures ({sk.Textures.Count}): {string.Join(" | ", sk.Textures)}");
+            Console.WriteLine($"  materials ({sk.Materials.Count}): {string.Join(" | ", sk.Materials)}");
+            Console.WriteLine($"  faces: {sk.FaceCount}");
+            Console.WriteLine($"  skeleton ends at offset {sk.EndOffset}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[{i}] resolution {hdr.Resolutions[i]}: FAILED - {ex.Message}");
+        }
+        break; // offset-chaining to the next LOD isn't implemented yet - only LOD 0 (or --lodIndex) is reachable
+    }
+    return 0;
+}
+
+// Find which mod/PBO (across the whole workshop root) defines a class with an exact name
+// anywhere in its config tree: Probe --findclass <workshopRoot> <className>
+if (args.Length >= 3 && args[0] == "--findclass")
+{
+    var fcRoot = args[1];
+    var fcWant = args[2];
+    int fcScanned = 0;
+    foreach (var modDir in Directory.EnumerateDirectories(fcRoot))
+    {
+        var ad = Path.Combine(modDir, "addons");
+        if (!Directory.Exists(ad)) continue;
+        foreach (var pbo in Directory.EnumerateFiles(ad, "*.pbo"))
+        {
+            fcScanned++;
+            try
+            {
+                using var arc = new ReTex.Core.Pbo.PboArchive(pbo);
+                var cfg = arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.bin", StringComparison.OrdinalIgnoreCase))
+                       ?? arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.cpp", StringComparison.OrdinalIgnoreCase));
+                if (cfg is null) continue;
+                var bytes = arc.Extract(cfg);
+                var root = ReTex.Core.Rap.RapReader.IsRapified(bytes)
+                    ? ReTex.Core.Rap.RapReader.Parse(bytes)
+                    : ReTex.Core.Rap.CppConfigParser.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+                bool Walk(ReTex.Core.Rap.RapClass c, string path)
+                {
+                    foreach (var ch in c.Classes)
+                    {
+                        var here = path.Length == 0 ? ch.Name : path + "/" + ch.Name;
+                        if (ch.Name.Equals(fcWant, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"FOUND in {Path.GetFileName(modDir)} -> {Path.GetFileName(pbo)}: {here} : {ch.Parent} ({ch.Properties.Count} props, {ch.Classes.Count} subclasses)");
+                            return true;
+                        }
+                        if (Walk(ch, here)) return true;
+                    }
+                    return false;
+                }
+                Walk(root, "");
+            }
+            catch { /* skip unreadable */ }
+        }
+    }
+    Console.WriteLine($"Scanned {fcScanned} PBOs.");
+    return 0;
+}
+
+// Find classes anywhere in a mod folder's PBOs that inherit (directly) from a given base class:
+// Probe --findderived <modFolder> <baseClassName>
+if (args.Length >= 3 && args[0] == "--findderived")
+{
+    var fdRoot = Path.Combine(args[1], "addons");
+    var fdWant = args[2];
+    foreach (var pbo in Directory.EnumerateFiles(fdRoot, "*.pbo"))
+    {
+        try
+        {
+            using var arc = new ReTex.Core.Pbo.PboArchive(pbo);
+            var cfg = arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.bin", StringComparison.OrdinalIgnoreCase))
+                   ?? arc.Entries.FirstOrDefault(e => e.FileName.EndsWith("config.cpp", StringComparison.OrdinalIgnoreCase));
+            if (cfg is null) continue;
+            var bytes = arc.Extract(cfg);
+            var root = ReTex.Core.Rap.RapReader.IsRapified(bytes)
+                ? ReTex.Core.Rap.RapReader.Parse(bytes)
+                : ReTex.Core.Rap.CppConfigParser.Parse(System.Text.Encoding.UTF8.GetString(bytes));
+            void Walk(ReTex.Core.Rap.RapClass c, string path)
+            {
+                foreach (var ch in c.Classes)
+                {
+                    if (ch.Parent.Equals(fdWant, StringComparison.OrdinalIgnoreCase))
+                        Console.WriteLine($"{Path.GetFileName(pbo)}: class {ch.Name}: {ch.Parent}  (in {path})");
+                    Walk(ch, path.Length == 0 ? ch.Name : path + "/" + ch.Name);
+                }
+            }
+            Walk(root, "");
+        }
+        catch { /* skip unreadable */ }
+    }
     return 0;
 }
 
@@ -69,6 +417,28 @@ if (args.Length >= 2 && args[0] == "--regen")
     return 0;
 }
 
+// Find entries whose ProjectTexture is missing on disk: Probe --missing <retex.json>
+if (args.Length >= 2 && args[0] == "--missing")
+{
+    var rpm = RetexProject.Load(args[1]);
+    var missing = RetexProjectService.FindMissingTextures(rpm);
+    Console.WriteLine(missing.Count == 0 ? "OK: no missing textures" : string.Join(Environment.NewLine, missing));
+    return missing.Count == 0 ? 0 : 1;
+}
+
+// Pack an existing project's CURRENT config.cpp to a loadable @Mod: Probe --pack <retex.json>
+if (args.Length >= 2 && args[0] == "--pack")
+{
+    var rpp = RetexProject.Load(args[1]);
+    var pbocPack = ReTex.Core.Tools.PboTool.FindDefault();
+    if (pbocPack is null) { Console.WriteLine("pboc.exe not found."); return 1; }
+    var res = await RetexProjectService.PackModAsync(rpp, new ReTex.Core.Tools.PboTool(pbocPack));
+    Console.WriteLine($"exit={res.ExitCode}  output={res.OutputPath}");
+    if (res.StdOut.Length > 0) Console.WriteLine("stdout: " + res.StdOut);
+    if (res.StdErr.Length > 0) Console.WriteLine("stderr: " + res.StdErr);
+    return res.Success ? 0 : 1;
+}
+
 // Dump a parsed config class (recursively): Probe --classdump <pbo> <className> [depth]
 if (args.Length >= 3 && args[0] == "--classdump")
 {
@@ -85,12 +455,36 @@ if (args.Length >= 3 && args[0] == "--classdump")
     return 0;
 }
 
+// Dump a rapified/text entry's root tree (e.g. an .rvmat): Probe --dumproot <pbo> <entrySubstring> [depth]
+if (args.Length >= 3 && args[0] == "--dumproot")
+{
+    using var arcr = new ReTex.Core.Pbo.PboArchive(args[1]);
+    var er = arcr.Entries.First(x => x.FileName.Contains(args[2], StringComparison.OrdinalIgnoreCase));
+    var br = arcr.Extract(er);
+    var rr = ReTex.Core.Rap.RapReader.IsRapified(br)
+        ? ReTex.Core.Rap.RapReader.Parse(br)
+        : ReTex.Core.Rap.CppConfigParser.Parse(System.Text.Encoding.UTF8.GetString(br));
+    int depthR = args.Length > 3 && int.TryParse(args[3], out var ddr) ? ddr : 6;
+    RapClassFinder.Dump(rr, 0, depthR);
+    return 0;
+}
+
 // Dump a PBO text entry: Probe --catentry <pbo> <entrySubstring>
 if (args.Length >= 3 && args[0] == "--catentry")
 {
     using var arc = new ReTex.Core.Pbo.PboArchive(args[1]);
     var e = arc.Entries.First(x => x.FileName.Contains(args[2], StringComparison.OrdinalIgnoreCase));
     Console.WriteLine(System.Text.Encoding.UTF8.GetString(arc.Extract(e)));
+    return 0;
+}
+
+// Extract a raw PBO entry to a file: Probe --extract <pbo> <entrySubstring> <outFile>
+if (args.Length >= 4 && args[0] == "--extract")
+{
+    using var arcx = new ReTex.Core.Pbo.PboArchive(args[1]);
+    var ex = arcx.Entries.First(x => x.FileName.Contains(args[2], StringComparison.OrdinalIgnoreCase));
+    File.WriteAllBytes(args[3], arcx.Extract(ex));
+    Console.WriteLine($"Wrote {ex.FileName} ({ex.DataSize} bytes) -> {args[3]}");
     return 0;
 }
 
@@ -271,7 +665,7 @@ static class RapClassFinder
         return null;
     }
 
-    static void Dump(ReTex.Core.Rap.RapClass c, int d, int maxDepth)
+    public static void Dump(ReTex.Core.Rap.RapClass c, int d, int maxDepth)
     {
         var ind = new string(' ', d * 2);
         var baseName = string.IsNullOrEmpty(c.Parent) ? "" : $": {c.Parent}";

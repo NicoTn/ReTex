@@ -57,9 +57,16 @@ public static class OdolReader
     }
 
     /// <summary>
-    /// Parses ModelInfo for ODOL v70+ up to and including the skeleton. The numeric prefix layout
-    /// (validated: bytes sum exactly to the skeleton offset on v73) precedes a Skeleton block:
-    /// name, isDiscrete, nBones, and (bone, parent) pairs.
+    /// Parses ModelInfo for ODOL v70+ up to and including the skeleton. The numeric prefix
+    /// layout (validated: bytes sum EXACTLY to the empirically-confirmed skeleton-name offset
+    /// on a real v73 file - 216 bytes of fixed/version-gated fields between ModelInfo start
+    /// and "SpaceMarine_ManSkeleton") precedes a Skeleton block: name, isDiscrete, nBones, and
+    /// (bone, parent) pairs. A wiki-sourced pseudo-code fetch (BI wiki, P3D_Model_Info) claims
+    /// several more fields exist (mass/armor/ThermalProfile[24]/ClassType/DestructType/
+    /// preferred_shadows) - byte-counting proved those do NOT fit before the skeleton (they'd
+    /// overshoot the confirmed 216-byte budget by hundreds of bytes), so if real they belong
+    /// AFTER the skeleton's bone list, not before. Not yet confirmed either way - see
+    /// OdolLodReader's doc comment for the current state of that investigation.
     /// </summary>
     public static OdolModelInfo ReadModelInfo(byte[] d, int startPos, int version)
     {

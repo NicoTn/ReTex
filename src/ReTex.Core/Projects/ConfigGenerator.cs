@@ -47,11 +47,12 @@ public static class ConfigGenerator
         if (entries.Count == 0) return;
 
         sb.AppendLine($"class {cfgName} {{");
-        // A uniform item declares `class ItemInfo: ItemInfo` to inherit the base uniform's ItemInfo
-        // (type=801/containerClass/mass). In a standalone patch config that base isn't visible, so
-        // forward-declare the engine's CfgWeapons-level `class ItemInfo` or the inheritance errors
-        // with "Undefined base class 'ItemInfo'".
-        if (entries.Any(e => e.IsUniform))
+        // Any class body that declares `class ItemInfo: ItemInfo` (uniform items, and headgear/vest
+        // whose copied source body carries an ItemInfo texture override) needs the engine's
+        // CfgWeapons-level `class ItemInfo` forward-declared here, or the inheritance errors with
+        // "Undefined base class 'ItemInfo'". Cover both: IsUniform (emitted by EmitUniformItem) and
+        // copied bodies that contain a `class ItemInfo` declaration.
+        if (entries.Any(e => e.IsUniform || e.CopiedBody.Contains("class ItemInfo", StringComparison.OrdinalIgnoreCase)))
             sb.AppendLine("    class ItemInfo;");
         // Forward-declare each distinct base class.
         foreach (var baseClass in entries.Select(e => e.SourceClass).Distinct(StringComparer.OrdinalIgnoreCase))
@@ -88,14 +89,26 @@ public static class ConfigGenerator
             {
                 // Copied source values (armor, weapon stats, ItemInfo, ...) with the source
                 // texture paths repointed at the project's textures wherever they appear.
-                var body = e.CopiedBody.TrimEnd('\r', '\n');
+                // Strip properties this method already emitted above (scope/scopeArsenal/
+                // scopeCurator/displayName/baseWeapon) - defensively, in case CopiedBody was
+                // captured by an older ReTex version that didn't exclude them, which would
+                // otherwise duplicate the member and fail to compile ("Member already defined").
+                // Also strip a redundant "model" redeclaration (same reasoning as
+                // RetexProjectService.AddRetexture's skip set: re-declaring an unchanged model path
+                // in a derived class is a known way to break hiddenSelections/hiddenSelectionsTextures
+                // binding, and it's already inherited unchanged, so dropping it is always safe).
+                var body = StripDuplicateKeys(e.CopiedBody.TrimEnd('\r', '\n'),
+                    "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model");
                 foreach (var s in e.Selections)
                     if (s.ProjectTexture.Length > 0 && s.SourceTexture.Length > 0)
                         body = body.Replace(s.SourceTexture, ProjectVirtual(s, p), StringComparison.OrdinalIgnoreCase);
 
-                sb.AppendLine("        // --- copied from source class (textures repointed to project) ---");
-                sb.AppendLine(body);
-                sb.AppendLine("        // --- end copied ---");
+                if (body.Length > 0)
+                {
+                    sb.AppendLine("        // --- copied from source class (textures repointed to project) ---");
+                    sb.AppendLine(body);
+                    sb.AppendLine("        // --- end copied ---");
+                }
             }
             else
             {
@@ -177,6 +190,21 @@ public static class ConfigGenerator
         var prefix = p.Prefix.Replace('/', '\\').Trim('\\');
         var rel = s.ProjectTexture.Replace('/', '\\').TrimStart('\\');
         return "\\" + prefix + "\\" + rel;
+    }
+
+    /// <summary>Removes top-level "key = ...;" lines for the given property names from a copied
+    /// class body (case-insensitive, whitespace-tolerant). Leaves nested classes (e.g. ItemInfo)
+    /// untouched - they're indented further and never start with one of these bare property names.</summary>
+    private static string StripDuplicateKeys(string body, params string[] keys)
+    {
+        var lines = body.Split('\n');
+        var kept = lines.Where(line =>
+        {
+            var trimmed = line.TrimStart();
+            return !keys.Any(k => trimmed.StartsWith(k, StringComparison.OrdinalIgnoreCase)
+                && trimmed.Length > k.Length && (trimmed[k.Length] == ' ' || trimmed[k.Length] == '='));
+        });
+        return string.Join('\n', kept).TrimEnd('\r', '\n');
     }
 
     private static string Quote(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";

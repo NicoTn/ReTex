@@ -55,6 +55,17 @@ public static class VirtualFileService
                 if (hit is not null) return hit;
             }
         }
+
+        // Last resort: some mods declare hiddenSelectionsTextures with a bare file name and no
+        // folder at all (e.g. "Collar_co.paa" for an entry actually stored at
+        // "textures\Collar_co.paa") - a quirk in the source config, not something we can normalize
+        // by prefix-stripping. Fall back to matching by file name alone.
+        if (!norm.Contains('\\'))
+        {
+            hit = arc.Entries.FirstOrDefault(e =>
+                string.Equals(System.IO.Path.GetFileName(e.FileName), norm, StringComparison.OrdinalIgnoreCase));
+            if (hit is not null) return hit;
+        }
         return null;
     }
 }

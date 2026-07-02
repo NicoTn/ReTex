@@ -9,12 +9,13 @@
     <RootNamespace>ReTex.App</RootNamespace>
     <AssemblyName>ReTex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.2.2" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />
     <PackageReference Include="AvalonEdit" Version="6.3.0.90" />
+    <PackageReference Include="HelixToolkit.Wpf" Version="3.1.2" />
   </ItemGroup>
 
   <ItemGroup>

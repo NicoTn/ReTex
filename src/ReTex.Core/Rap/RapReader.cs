@@ -138,17 +138,6 @@ public static class RapReader
         }
 
         /// <summary>7-bit LEB128-style compressed integer.</summary>
-        public int ReadCompressedInt()
-        {
-            int value = 0, shift = 0;
-            byte b;
-            do
-            {
-                b = ReadByte();
-                value |= (b & 0x7F) << shift;
-                shift += 7;
-            } while ((b & 0x80) != 0);
-            return value;
-        }
+        public int ReadCompressedInt() => BinaryUtil.ReadCompressedInt(_d, ref Pos);
     }
 }

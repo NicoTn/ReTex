@@ -4,6 +4,7 @@
         xmlns:vm="clr-namespace:ReTex.App.ViewModels"
         xmlns:local="clr-namespace:ReTex.App"
         xmlns:avalonedit="http://icsharpcode.net/sharpdevelop/avalonedit"
+        xmlns:h="http://helix-toolkit.org/wpf"
         Title="ReTex - Arma 3 Retexture Studio" Height="760" Width="1260"
         UseLayoutRounding="True">
 
@@ -107,16 +108,30 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Texture preview -->
-                <Border DockPanel.Dock="Top" Height="220" Background="#0B1220" Margin="0,0,0,8"
-                        BorderBrush="#374151" BorderThickness="1">
-                    <Grid>
-                        <Image Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
-                               RenderOptions.BitmapScalingMode="HighQuality"/>
-                        <TextBlock Text="{Binding PreviewInfo}" Foreground="#6B7280" FontSize="10"
-                                   VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
-                    </Grid>
-                </Border>
+                <!-- Preview: flat texture + 3D model tabs -->
+                <TabControl DockPanel.Dock="Top" Height="280" Margin="0,0,0,8" Background="#0B1220"
+                            BorderBrush="#374151" BorderThickness="1">
+                    <TabItem Header="Texture">
+                        <Grid Background="#0B1220">
+                            <Image Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
+                                   RenderOptions.BitmapScalingMode="HighQuality"/>
+                            <TextBlock Text="{Binding PreviewInfo}" Foreground="#6B7280" FontSize="10"
+                                       VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
+                        </Grid>
+                    </TabItem>
+                    <TabItem Header="3D Model">
+                        <Grid Background="#0B1220">
+                            <h:HelixViewport3D x:Name="Viewport" Background="#0B1220"
+                                               ShowCoordinateSystem="False" ShowViewCube="True"
+                                               ZoomExtentsWhenLoaded="True" IsHeadLightEnabled="True">
+                                <ModelVisual3D Content="{Binding PreviewModel3D}"/>
+                            </h:HelixViewport3D>
+                            <TextBlock Text="{Binding PreviewModelInfo}" Foreground="#6B7280" FontSize="10"
+                                       VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"
+                                       IsHitTestVisible="False"/>
+                        </Grid>
+                    </TabItem>
+                </TabControl>
 
                 <!-- Project controls -->
                 <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">

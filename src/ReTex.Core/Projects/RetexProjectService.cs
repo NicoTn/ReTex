@@ -39,7 +39,7 @@ public static class RetexProjectService
             Category = asset.Category,
             SourceModel = asset.Model,
             SourceAddon = asset.SourceAddon,
-            DisplayName = asset.DisplayName.Length > 0 ? asset.DisplayName + " (ReTex)" : asset.ClassName + " (ReTex)",
+            DisplayName = RetexDisplayName(asset.DisplayName, asset.ClassName),
             NewClassName = UniqueClassName(proj, $"{Slug(proj.Name)}_{asset.ClassName}"),
         };
 
@@ -63,7 +63,15 @@ public static class RetexProjectService
             // ItemInfo's textures, not the top-level ones.
             // Drop baseWeapon: the source value points at the ORIGINAL weapon, which makes Arsenal
             // treat our class as a hidden sub-variant. The generator re-emits it as a self-reference.
-            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "scope", "displayName", "baseWeapon" };
+            // Drop scopeArsenal/scopeCurator too - the generator always emits its own copies of these
+            // (same as scope), so leaving the source's values in would duplicate the member and fail
+            // to compile ("Member already defined").
+            // Drop model too: some source classes explicitly redeclare their own model= (instead of
+            // relying on inheritance), and re-declaring an unchanged model path in a derived class is
+            // a known way to break hiddenSelections/hiddenSelectionsTextures binding in Arma - the new
+            // class already gets the exact same model via inheritance, so copying it adds nothing.
+            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model" };
             entry.CopiedBody = Rap.RapWriter.WriteBody(asset.SourceClassNode, indent: 8, skip);
         }
 
@@ -112,6 +120,19 @@ public static class RetexProjectService
         return entry;
     }
 
+    /// <summary>
+    /// Builds the "(ReTex)" display name, falling back to the class name when the source has none.
+    /// A source displayName that is a stringtable macro (e.g. "$STR_foo") must be used as-is: Arma
+    /// only resolves $STR_ lookups when the whole value is the macro, so appending " (ReTex)" breaks
+    /// the lookup entirely and the item ends up with no resolvable name (invisible in the Arsenal).
+    /// </summary>
+    private static string RetexDisplayName(string sourceDisplayName, string className)
+    {
+        if (sourceDisplayName.StartsWith('$')) return sourceDisplayName;
+        var baseName = sourceDisplayName.Length > 0 ? sourceDisplayName : className;
+        return baseName + " (ReTex)";
+    }
+
     /// <summary>Reads a uniform item's clothing-unit class from its ItemInfo (or top-level) uniformClass.</summary>
     private static string UniformClassOf(Rap.RapClass node)
     {
@@ -133,7 +154,7 @@ public static class RetexProjectService
             Category = AssetCategory.Unit,
             SourceModel = unitAsset.Model,
             SourceAddon = unitAsset.SourceAddon,
-            DisplayName = (unitAsset.DisplayName.Length > 0 ? unitAsset.DisplayName : unitAsset.ClassName) + " (ReTex)",
+            DisplayName = RetexDisplayName(unitAsset.DisplayName, unitAsset.ClassName),
             NewClassName = UniqueClassName(proj, $"{Slug(proj.Name)}_{unitAsset.ClassName}"),
         };
 
@@ -179,6 +200,27 @@ public static class RetexProjectService
         File.WriteAllText(Path.Combine(proj.AddonDir, "$PBOPREFIX$"), proj.Prefix);
         File.WriteAllText(proj.ConfigPath, ConfigGenerator.Generate(proj));
         proj.Save();
+    }
+
+    /// <summary>
+    /// Finds entries whose ProjectTexture points at a file that no longer exists on disk (e.g. a
+    /// stale reference left behind after re-retexturing the same asset created a differently-named
+    /// copy, or a manual file cleanup). The config would still reference these paths and pack
+    /// "successfully" - the PBO just silently ends up without that texture, so the retexture never
+    /// actually applies in-game. Call after opening/regenerating a project so the gap is visible
+    /// immediately instead of requiring manual investigation.
+    /// </summary>
+    public static List<string> FindMissingTextures(RetexProject proj)
+    {
+        var missing = new List<string>();
+        foreach (var e in proj.Entries)
+            foreach (var s in e.Selections)
+            {
+                if (s.ProjectTexture.Length == 0) continue;
+                if (!File.Exists(Path.Combine(proj.AddonDir, s.ProjectTexture)))
+                    missing.Add($"{e.NewClassName}: {s.ProjectTexture}");
+            }
+        return missing;
     }
 
     /// <summary>Packs the addon's CURRENT config.cpp to "&lt;outputDir&gt;\main.pbo" via pboc (does NOT regenerate; manual edits are preserved).</summary>
