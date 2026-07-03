@@ -35,6 +35,9 @@ public sealed class AppSettings
     /// <summary>Height (in star units, stored as a raw double) of the browse/preview row above the config editor.</summary>
     public double BrowseRowHeight { get; set; }
 
+    /// <summary>Last-used bottom-right editor tab (0 = form editor, 1 = config.cpp), so the app reopens on it.</summary>
+    public int LastEditorTab { get; set; }
+
     private const int MaxRecent = 8;
 
     /// <summary>Pushes a project file to the top of the MRU list (de-duplicated, capped).</summary>

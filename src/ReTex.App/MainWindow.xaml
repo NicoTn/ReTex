@@ -62,6 +62,38 @@
             </DockPanel>
         </Border>
 
+        <!-- Project bar: current project + New / Open / Recent, always visible (document-bar style) -->
+        <Border DockPanel.Dock="Top" Padding="8,5" Background="{StaticResource Bg.Status}"
+                BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,0,1">
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Left" Text="Project" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,14,0"/>
+                <ComboBox DockPanel.Dock="Right" Width="120" VerticalAlignment="Center"
+                          ItemsSource="{Binding RecentProjects}" SelectedItem="{Binding SelectedRecent, Mode=TwoWay}"
+                          ToolTip="Open a recent project">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Converter={StaticResource ProjectPathToName}}" ToolTip="{Binding}"/>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <TextBlock DockPanel.Dock="Right" Text="Recent" VerticalAlignment="Center"
+                           Foreground="{StaticResource Fg.Muted}" Margin="14,0,6,0"/>
+                <Button DockPanel.Dock="Right" Content="Open…" Width="64" Margin="6,0,0,0"
+                        Command="{Binding OpenProjectCommand}" ToolTip="Open a project (Ctrl+O)"/>
+                <Button DockPanel.Dock="Right" Content="New" Width="56" Margin="14,0,0,0"
+                        Command="{Binding NewProjectCommand}" ToolTip="Create a new project (Ctrl+N)"/>
+                <TextBox DockPanel.Dock="Right" Width="170" VerticalContentAlignment="Center" Margin="6,0,0,0"
+                         Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}"
+                         ToolTip="Name used when creating a new project"/>
+                <TextBlock DockPanel.Dock="Right" Text="New name:" VerticalAlignment="Center"
+                           Foreground="{StaticResource Fg.Muted}" Margin="14,0,6,0"/>
+                <!-- Fills the middle: which project is currently loaded -->
+                <TextBlock VerticalAlignment="Center" TextTrimming="CharacterEllipsis" FontWeight="SemiBold"
+                           Text="{Binding CurrentProjectName, StringFormat=Loaded: {0}}"
+                           ToolTip="{Binding CurrentProjectPath}"/>
+            </DockPanel>
+        </Border>
+
         <!-- Status bar (severity-coloured, wraps so warnings are fully readable) -->
         <Border DockPanel.Dock="Bottom" Padding="8,4" Background="{StaticResource Bg.Status}">
             <TextBlock Text="{Binding Status}" TextWrapping="Wrap" MaxHeight="48"
@@ -173,9 +205,12 @@
                                        RenderOptions.BitmapScalingMode="HighQuality"/>
                                 <TextBlock Text="{Binding PreviewInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
-                                <Button Content="⟳ Refresh" Padding="8,2" Command="{Binding RefreshPreviewCommand}"
-                                        VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0"
-                                        ToolTip="Reload the preview after editing the texture externally"/>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
+                                    <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
+                                            ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
+                                    <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"
+                                            ToolTip="Reload the preview after editing the texture externally"/>
+                                </StackPanel>
                             </Grid>
                         </TabItem>
                         <TabItem Header="3D Model">
@@ -188,51 +223,32 @@
                                 <TextBlock Text="{Binding PreviewModelInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"
                                            IsHitTestVisible="False"/>
-                                <Button Content="⟳ Refresh" Padding="8,2" Command="{Binding RefreshPreviewCommand}"
-                                        VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0"
-                                        ToolTip="Reload the preview after editing the texture externally"/>
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
+                                    <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
+                                            ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
+                                    <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"
+                                            ToolTip="Reload the preview after editing the texture externally"/>
+                                </StackPanel>
                             </Grid>
                         </TabItem>
                     </TabControl>
 
-                    <!-- Project header + controls -->
-                    <StackPanel Grid.Row="2" Margin="0,0,0,6">
-                        <!-- Current project + open/new/recent -->
-                        <DockPanel Margin="0,0,0,6">
-                            <TextBlock Text="Project:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <ComboBox DockPanel.Dock="Right" Width="96" Margin="6,0,0,0" VerticalAlignment="Center"
-                                      ItemsSource="{Binding RecentProjects}" SelectedItem="{Binding SelectedRecent, Mode=TwoWay}"
-                                      ToolTip="Open a recent project">
-                                <ComboBox.ItemTemplate>
-                                    <DataTemplate>
-                                        <TextBlock Text="{Binding Converter={StaticResource ProjectPathToName}}" ToolTip="{Binding}"/>
-                                    </DataTemplate>
-                                </ComboBox.ItemTemplate>
-                            </ComboBox>
-                            <TextBlock DockPanel.Dock="Right" Text="Recent" VerticalAlignment="Center" Margin="12,0,0,0"
-                                       Foreground="{StaticResource Fg.Muted}"/>
-                            <Button DockPanel.Dock="Right" Content="Open…" Width="60" Margin="6,0,0,0"
-                                    Command="{Binding OpenProjectCommand}" ToolTip="Open a project (Ctrl+O)"/>
-                            <Button DockPanel.Dock="Right" Content="New" Width="52" Margin="6,0,0,0"
-                                    Command="{Binding NewProjectCommand}" ToolTip="New project (Ctrl+N)"/>
-                            <TextBox Text="{Binding ProjectName, UpdateSourceTrigger=PropertyChanged}"
-                                     VerticalContentAlignment="Center" ToolTip="Name used when creating a new project"/>
-                        </DockPanel>
-                        <!-- Loaded-project name badge -->
-                        <TextBlock Margin="0,0,0,6" TextTrimming="CharacterEllipsis"
-                                   Foreground="{StaticResource Fg.Status}" FontSize="11"
-                                   Text="{Binding CurrentProjectName, StringFormat=Loaded: {0}}"
-                                   ToolTip="{Binding CurrentProjectPath}"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
-                            <Button Content="Retexture selected asset →" Padding="10,4"
-                                    Command="{Binding RetextureSelectedCommand}"/>
-                            <Button Content="Retexture all listed" Padding="10,4" Margin="6,0,0,0"
-                                    Command="{Binding RetextureAllListedCommand}"
-                                    ToolTip="Add every asset currently shown (after filtering) to the project"/>
+                    <!-- Retexture actions card (project identity now lives in the top project bar) -->
+                    <Border Grid.Row="2" Margin="0,4,0,0" Padding="10" CornerRadius="4"
+                            Background="{StaticResource Bg.Toolbar}" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="Add to project" Style="{StaticResource Heading}" Margin="0,0,0,8"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="Retexture selected asset →" Padding="10,4"
+                                        Command="{Binding RetextureSelectedCommand}"/>
+                                <Button Content="Retexture all listed" Padding="10,4" Margin="8,0,0,0"
+                                        Command="{Binding RetextureAllListedCommand}"
+                                        ToolTip="Add every asset currently shown (after filtering) to the project"/>
+                            </StackPanel>
+                            <CheckBox Content="Copy source values (armor/stats)"
+                                      IsChecked="{Binding CopySourceValues}"/>
                         </StackPanel>
-                        <CheckBox Content="Copy source values (armor/stats)"
-                                  IsChecked="{Binding CopySourceValues}"/>
-                    </StackPanel>
+                    </Border>
                 </Grid>
             </Grid>
 
@@ -252,14 +268,7 @@
                 <DockPanel Grid.Column="0">
                     <TextBlock DockPanel.Dock="Top" Text="Retextures in project" Style="{StaticResource Heading}"
                                VerticalAlignment="Center" Margin="0,0,0,6"/>
-                    <!-- Rename row -->
-                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <Button DockPanel.Dock="Right" Content="Rename" Width="70" Margin="6,0,0,0"
-                                Command="{Binding RenameEntryCommand}" ToolTip="Rename the selected retexture's class"/>
-                        <TextBox Text="{Binding RenameText, UpdateSourceTrigger=PropertyChanged}"
-                                 VerticalContentAlignment="Center" ToolTip="New class name for the selected retexture"/>
-                    </DockPanel>
-                    <!-- Action buttons -->
+                    <!-- Action buttons (rename now lives in the Editor form on the right) -->
                     <UniformGrid DockPanel.Dock="Bottom" Rows="1" Columns="3" Margin="0,6,0,0">
                         <Button Content="Edit" Margin="0,0,3,0" Command="{Binding EditEntryTexturesCommand}"
                                 ToolTip="Open this retexture's .paa(s) in your default editor (GIMP/Photoshop)"/>
@@ -300,29 +309,126 @@
 
                 <GridSplitter Grid.Column="1" Width="4" VerticalAlignment="Stretch" Margin="6,0,6,0"/>
 
-                <!-- config.cpp editor + its action buttons -->
+                <!-- Editor (form) | config.cpp tabs, with shared project action buttons above -->
                 <DockPanel Grid.Column="2">
-                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <TextBlock Text="config.cpp" Style="{StaticResource Heading}" VerticalAlignment="Center"/>
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                            <Button Content="Regenerate" Width="92" Command="{Binding RegenerateConfigCommand}"
-                                    ToolTip="Rebuild config.cpp from the project's retextures (discards manual edits) — Ctrl+R"/>
-                            <Button Content="Save config" Width="92" Margin="8,0,0,0" Command="{Binding SaveConfigCommand}"
-                                    ToolTip="Save the editor's config.cpp (Ctrl+S)"/>
-                            <Button Content="Pack @Mod" Width="92" Margin="8,0,0,0" Command="{Binding PackCommand}"
-                                    ToolTip="Build a loadable @mod folder (Ctrl+Shift+P)"/>
-                            <Button Content="Open folder" Width="92" Margin="8,0,0,0" Command="{Binding OpenProjectFolderCommand}"/>
-                        </StackPanel>
-                    </DockPanel>
+                    <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" HorizontalAlignment="Left" Margin="0,0,0,6">
+                        <Button Content="Regenerate" Width="112" Height="30" Command="{Binding RegenerateConfigCommand}"
+                                ToolTip="Rebuild config.cpp from the project (keeps displayName + copied values) — Ctrl+R"/>
+                        <Button Content="Save config" Width="112" Height="30" Margin="8,0,0,0" Command="{Binding SaveConfigCommand}"
+                                ToolTip="Save the editor's config.cpp (Ctrl+S)"/>
+                        <Button Content="Pack @Mod" Width="112" Height="30" Margin="8,0,0,0" Command="{Binding PackCommand}"
+                                ToolTip="Build a loadable @mod folder (Ctrl+Shift+P)"/>
+                        <Button Content="Open folder" Width="112" Height="30" Margin="8,0,0,0" Command="{Binding OpenProjectFolderCommand}"/>
+                    </StackPanel>
 
-                    <!-- Config editor (AvalonEdit: syntax highlighting, line numbers, Ctrl+F find) -->
-                    <avalonedit:TextEditor x:Name="ConfigEditor"
-                             local:AvalonEditBehaviour.BindableText="{Binding ConfigText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             FontFamily="Consolas" FontSize="12"
-                             ShowLineNumbers="True" WordWrap="False"
-                             HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                             Background="{StaticResource Bg.Panel}" Foreground="{StaticResource Fg.Primary}"
-                             LineNumbersForeground="{StaticResource Line.Numbers}"/>
+                    <TabControl SelectedIndex="{Binding EditorTabIndex}" Background="{StaticResource Bg.Panel}"
+                                BorderBrush="{StaticResource Border.Muted}" BorderThickness="1">
+                        <!-- ============ FORM EDITOR ============ -->
+                        <TabItem Header="Editor">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" Background="{StaticResource Bg.Panel}" Padding="10">
+                                <StackPanel>
+                                    <!-- Selected retexture -->
+                                    <TextBlock Text="Selected retexture" Style="{StaticResource Heading}" Margin="0,0,0,6"/>
+                                    <Grid IsEnabled="{Binding SelectedEntry, Converter={StaticResource NotNullToBool}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Class name" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                                        <TextBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                                                 Text="{Binding RenameText, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="The generated class name for this retexture"/>
+                                        <Button Grid.Row="0" Grid.Column="2" Content="Apply" Width="64" Margin="6,0,0,6"
+                                                Command="{Binding RenameEntryCommand}" ToolTip="Rename the class (updates config)"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Display name" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                                        <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                                                 Text="{Binding FormDisplayName, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="Name shown in Arsenal (commits when you click away)"/>
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="Source class" VerticalAlignment="Center" Margin="0,0,10,4"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,4" VerticalAlignment="Center"
+                                                   Foreground="{StaticResource Fg.Muted}" TextTrimming="CharacterEllipsis"
+                                                   Text="{Binding SelectedEntry.SourceClass}"/>
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="Source model" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                        <TextBlock Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" VerticalAlignment="Center"
+                                                   Foreground="{StaticResource Fg.Muted}" TextTrimming="CharacterEllipsis"
+                                                   Text="{Binding SelectedEntry.SourceModel}"/>
+                                    </Grid>
+
+                                    <!-- Selections + their textures -->
+                                    <TextBlock Text="Textures" Style="{StaticResource Heading}" Margin="0,14,0,6"/>
+                                    <ItemsControl ItemsSource="{Binding FormSelections}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,0,1" Padding="0,0,0,6" Margin="0,0,0,6">
+                                                    <DockPanel>
+                                                        <Button DockPanel.Dock="Right" Content="Browse…" Width="76" VerticalAlignment="Center"
+                                                                Command="{Binding BrowseCommand}" ToolTip="Assign a .paa file to this selection"/>
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Text="{Binding ProjectTexture}" Foreground="{StaticResource Fg.Primary}"
+                                                                       FontSize="11" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Text="{Binding SourceTexture, StringFormat=source: {0}}" Foreground="{StaticResource Fg.Muted}"
+                                                                       FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                                        </StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <TextBlock Text="(select a retexture on the left to edit it)" Foreground="{StaticResource Fg.Muted}" FontSize="11"
+                                               Visibility="{Binding SelectedEntry, Converter={StaticResource NullToVisibility}}"/>
+
+                                    <!-- Project settings -->
+                                    <TextBlock Text="Project" Style="{StaticResource Heading}" Margin="0,18,0,6"/>
+                                    <Grid IsEnabled="{Binding CurrentProjectPath, Converter={StaticResource NonEmptyToBool}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Author" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                                        <TextBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                                                 Text="{Binding FormAuthor, UpdateSourceTrigger=LostFocus}"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Prefix" VerticalAlignment="Center" Margin="0,0,10,6"/>
+                                        <TextBox Grid.Row="1" Grid.Column="1" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                                                 Text="{Binding FormPrefix, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="$PBOPREFIX$ — the in-game path of this addon"/>
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="requiredAddons" VerticalAlignment="Top" Margin="0,2,10,0"/>
+                                        <TextBox Grid.Row="2" Grid.Column="1" MinHeight="54" AcceptsReturn="True" TextWrapping="NoWrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 Text="{Binding FormRequiredAddons, UpdateSourceTrigger=LostFocus}"
+                                                 ToolTip="One addon per line"/>
+                                    </Grid>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </TabItem>
+
+                        <!-- ============ config.cpp ============ -->
+                        <TabItem Header="config.cpp">
+                            <avalonedit:TextEditor x:Name="ConfigEditor"
+                                     local:AvalonEditBehaviour.BindableText="{Binding ConfigText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     FontFamily="Consolas" FontSize="12"
+                                     ShowLineNumbers="True" WordWrap="False"
+                                     HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                                     Background="{StaticResource Bg.Panel}" Foreground="{StaticResource Fg.Primary}"
+                                     LineNumbersForeground="{StaticResource Line.Numbers}"/>
+                        </TabItem>
+                    </TabControl>
                 </DockPanel>
             </Grid>
         </Grid>

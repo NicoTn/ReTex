@@ -11,6 +11,9 @@
             <conv:FileNameConverter x:Key="FileNameConverter"/>
             <conv:StatusSeverityToBrushConverter x:Key="StatusSeverityToBrush"/>
             <conv:ProjectPathToNameConverter x:Key="ProjectPathToName"/>
+            <conv:NotNullToBoolConverter x:Key="NotNullToBool"/>
+            <conv:NullToVisibilityConverter x:Key="NullToVisibility"/>
+            <conv:NonEmptyToBoolConverter x:Key="NonEmptyToBool"/>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         </ResourceDictionary>
     </Application.Resources>

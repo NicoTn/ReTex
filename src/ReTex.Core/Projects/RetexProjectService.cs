@@ -205,6 +205,23 @@ public static class RetexProjectService
         return unitEntry;
     }
 
+    /// <summary>
+    /// Imports an external .paa file into the project's textures folder (used by the form editor's
+    /// "Browse…" flow to assign a hand-made texture to a selection). Returns the project-relative
+    /// path (e.g. "textures\foo.paa"). Throws if the file doesn't exist. If a file of the same name
+    /// already exists in the project it's given a unique name rather than overwritten.
+    /// </summary>
+    public static string ImportTexture(RetexProject proj, string filePath)
+    {
+        if (!File.Exists(filePath)) throw new FileNotFoundException("Texture file not found", filePath);
+        Directory.CreateDirectory(proj.TexturesDir);
+        var raw = Path.GetFileName(filePath);
+        if (Path.GetExtension(raw).Length == 0) raw += ".paa";
+        var fileName = UniqueTextureName(proj, raw);
+        File.Copy(filePath, Path.Combine(proj.TexturesDir, fileName), overwrite: false);
+        return Path.Combine("textures", fileName);
+    }
+
     /// <summary>Copies a source selection's .paa into the project's textures folder; returns the
     /// project-relative path (e.g. "textures\foo.paa") or "" if the source can't be found.</summary>
     private static string CopySourceTexture(RetexProject proj, IReadOnlyList<string> modPboPaths, string sourceTexture)

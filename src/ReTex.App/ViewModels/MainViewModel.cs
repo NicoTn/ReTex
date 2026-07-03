@@ -68,6 +68,20 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string? _selectedRecent;
     private RetexProject? _project;
 
+    // --- Form editor (structured alternative to hand-editing config.cpp) ---
+    [ObservableProperty] private string _formDisplayName = "";
+    [ObservableProperty] private string _formAuthor = "";
+    [ObservableProperty] private string _formPrefix = "";
+    [ObservableProperty] private string _formRequiredAddons = "";
+    /// <summary>Bottom-right editor tab: 0 = form editor, 1 = config.cpp.</summary>
+    [ObservableProperty] private int _editorTabIndex;
+    /// <summary>Per-selection rows for the currently selected entry (Browse-to-assign texture).</summary>
+    public ObservableCollection<SelectionRowViewModel> FormSelections { get; } = new();
+    // True while the form fields are being repopulated from the model, so the commit handlers don't
+    // fire (and regenerate) in response to our own programmatic assignments.
+    private bool _suppressFormCommit;
+    private int _prevEditorTab;
+
     // --- Tooling status ---
     [ObservableProperty] private bool _pbocReady;
     [ObservableProperty] private string _pbocTooltip = "";
@@ -84,6 +98,8 @@ public partial class MainViewModel : ObservableObject
         RefreshPbocStatus();
         _texDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
         _texDebounce.Tick += (_, _) => { _texDebounce.Stop(); RefreshPreview(); };
+        _prevEditorTab = Math.Clamp(_settings.LastEditorTab, 0, 1);
+        EditorTabIndex = _prevEditorTab;
         if (Directory.Exists(WorkshopPath)) ScanWorkshop();
     }
 
@@ -287,6 +303,7 @@ public partial class MainViewModel : ObservableObject
         _settings.Save();
         LoadRecents();
         SetupTextureWatcher();
+        RebuildProjectForm();
     }
 
     /// <summary>Loads the MRU list from settings, dropping projects whose file no longer exists.</summary>
@@ -406,10 +423,124 @@ public partial class MainViewModel : ObservableObject
     partial void OnSelectedEntryChanged(RetexEntry? value)
     {
         RenameText = value?.NewClassName ?? "";
+        RebuildEntryForm(value);
         if (_project is null || value is null) return;
         var rel = value.Selections.FirstOrDefault(s => s.ProjectTexture.Length > 0)?.ProjectTexture;
         if (rel is not null) _ = LoadProjectPreview(Path.Combine(_project.AddonDir, rel));
         _ = LoadPreviewModel(value.SourceModel, value.Selections); // project flow: retexture applied
+    }
+
+    // ---------------------------------------------------------------- form editor
+
+    /// <summary>Repopulates the per-entry form fields (display name + selection rows) from the model.</summary>
+    private void RebuildEntryForm(RetexEntry? entry)
+    {
+        _suppressFormCommit = true;
+        FormDisplayName = entry?.DisplayName ?? "";
+        FormSelections.Clear();
+        if (entry is not null)
+            foreach (var s in entry.Selections.OrderBy(s => s.Index))
+                FormSelections.Add(new SelectionRowViewModel(s, BrowseSelectionTexture));
+        _suppressFormCommit = false;
+    }
+
+    /// <summary>Repopulates the project-level form fields (author / prefix / requiredAddons) from the model.</summary>
+    private void RebuildProjectForm()
+    {
+        _suppressFormCommit = true;
+        FormAuthor = _project?.Author ?? "";
+        FormPrefix = _project?.Prefix ?? "";
+        FormRequiredAddons = _project is null ? "" : string.Join(Environment.NewLine, _project.RequiredAddons);
+        _suppressFormCommit = false;
+    }
+
+    partial void OnEditorTabIndexChanged(int value)
+    {
+        // Leaving the config.cpp tab (index 1): fold recognized manual text edits back into the
+        // model, then refresh the form so it reflects them (the chosen "auto-fold on tab switch").
+        // We deliberately DON'T rewrite ConfigText here — the user's text (incl. comments) stays until
+        // an explicit Regenerate or a form edit rebuilds it, so tabbing over is non-destructive.
+        if (_prevEditorTab == 1 && value != 1 && _project is not null)
+        {
+            PreserveManualEdits();
+            RebuildEntryForm(SelectedEntry);
+            RebuildProjectForm();
+        }
+        _prevEditorTab = value;
+        _settings.LastEditorTab = value;
+        _settings.Save();
+    }
+
+    partial void OnFormDisplayNameChanged(string value)
+    {
+        if (_suppressFormCommit || _project is null || SelectedEntry is null) return;
+        if (value == SelectedEntry.DisplayName) return;
+        SelectedEntry.DisplayName = value;
+        if (value.Trim().Length == 0) SetStatus("Display name is blank — the item may be unnamed in Arsenal.", StatusSeverity.Warn);
+        RegenerateAndRefresh(refreshList: false);
+    }
+
+    partial void OnFormAuthorChanged(string value)
+    {
+        if (_suppressFormCommit || _project is null) return;
+        if (value == _project.Author) return;
+        _project.Author = value;
+        RegenerateAndRefresh(refreshList: false);
+    }
+
+    partial void OnFormPrefixChanged(string value)
+    {
+        if (_suppressFormCommit || _project is null) return;
+        var v = value.Trim();
+        if (v.Length == 0 || v == _project.Prefix) return;
+        _project.Prefix = v;   // changes the in-game texture virtual paths; regenerate re-points them
+        RegenerateAndRefresh(refreshList: false);
+    }
+
+    partial void OnFormRequiredAddonsChanged(string value)
+    {
+        if (_suppressFormCommit || _project is null) return;
+        var list = value.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
+        if (list.SequenceEqual(_project.RequiredAddons)) return;
+        _project.RequiredAddons = list;
+        RegenerateAndRefresh(refreshList: false);
+    }
+
+    /// <summary>Assigns an external .paa (chosen via a file dialog) to a selection, copying it into the
+    /// project's textures folder and re-pointing the config + preview.</summary>
+    private void BrowseSelectionTexture(SelectionRowViewModel row)
+    {
+        if (_project is null) { SetStatus("Open or create a project first.", StatusSeverity.Warn); return; }
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = $"Choose a .paa texture for '{row.Name}'",
+            Filter = "Arma texture (*.paa)|*.paa|All files (*.*)|*.*",
+            InitialDirectory = Directory.Exists(_project.TexturesDir) ? _project.TexturesDir : null,
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var projRel = RetexProjectService.ImportTexture(_project, dlg.FileName);
+            row.Selection.ProjectTexture = projRel;
+            RegenerateAndRefresh(refreshList: true);
+            SetStatus($"Assigned {Path.GetFileName(dlg.FileName)} to '{row.Name}'.");
+        }
+        catch (Exception ex) { SetStatus($"Couldn't assign texture: {ex.Message}", StatusSeverity.Error); }
+    }
+
+    /// <summary>Regenerates config.cpp from the (form-edited) model and refreshes the editor text.
+    /// Preserves the current entry selection; only rebuilds the left list when its rows may have
+    /// changed (class name / texture assignments), not for pure value edits.</summary>
+    private void RegenerateAndRefresh(bool refreshList)
+    {
+        if (_project is null) return;
+        RetexProjectService.GenerateConfig(_project);
+        ConfigText = File.ReadAllText(_project.ConfigPath);
+        if (!refreshList) return;
+        var keep = SelectedEntry;
+        RefreshEntries();
+        if (keep is not null)
+            SelectedEntry = _project.Entries.FirstOrDefault(e => ReferenceEquals(e, keep));
     }
 
     /// <summary>Builds the 3D model preview off the UI thread: extracts the .p3d from the source
@@ -494,6 +625,47 @@ public partial class MainViewModel : ObservableObject
             PreviewInfo = $"{Path.GetFileName(path)}  {img.Width}x{img.Height}  (project)";
         }
         catch (Exception ex) { PreviewInfo = $"(preview failed: {ex.Message})"; }
+    }
+
+    /// <summary>Extracts the current context's SOURCE texture(s) to temp .paa files and opens them in
+    /// the default image editor — for referencing the originals or grabbing parts of them while
+    /// retexturing. Uses the selected asset's textures when browsing, else the selected entry's source
+    /// textures. Copies live under %TEMP%\ReTex\source so the real PBO/project is never touched.</summary>
+    [RelayCommand]
+    private void OpenSourceTextures()
+    {
+        var texs = (SelectedAsset is not null
+                ? SelectedAsset.HiddenSelectionsTextures
+                : SelectedEntry?.Selections.Select(s => s.SourceTexture) ?? Enumerable.Empty<string>())
+            .Where(t => !string.IsNullOrWhiteSpace(t))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (texs.Count == 0) { SetStatus("No source texture to open for the current selection.", StatusSeverity.Warn); return; }
+
+        var allPbos = Mods.SelectMany(m => m.PboPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var selPbos = SelectedMod?.PboPaths.ToList() ?? new List<string>();
+        var dir = Path.Combine(Path.GetTempPath(), "ReTex", "source");
+        try { Directory.CreateDirectory(dir); } catch (Exception ex) { SetStatus($"Couldn't create temp folder: {ex.Message}", StatusSeverity.Error); return; }
+
+        int opened = 0;
+        foreach (var t in texs)
+        {
+            try
+            {
+                var bytes = ExtractAcrossMods(allPbos, selPbos, t);
+                if (bytes is null) continue;
+                var name = Path.GetFileName(t.Replace('\\', '/'));
+                if (Path.GetExtension(name).Length == 0) name += ".paa";
+                var path = Path.Combine(dir, name);
+                File.WriteAllBytes(path, bytes);
+                Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+                opened++;
+            }
+            catch { /* skip this one, keep going */ }
+        }
+        SetStatus(opened > 0
+            ? $"Opened {opened} source texture(s) in your editor (temp copies in {dir})."
+            : "Couldn't extract the source texture(s) — is the source mod scanned?",
+            opened > 0 ? StatusSeverity.Info : StatusSeverity.Warn);
     }
 
     /// <summary>Re-runs the preview for whatever is currently selected. Used by the Refresh button
@@ -685,9 +857,13 @@ public partial class MainViewModel : ObservableObject
     {
         if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
         if (MessageBox.Show(
-                "Rebuild config.cpp from the project? Your edits to displayName and copied class values are kept; " +
-                "structural parts (class list, texture paths, formatting) and any comments or hand-added classes are regenerated.",
-                "Regenerate config", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+                "Regenerate config.cpp from the project?\n\n" +
+                "KEPT:  your edits to displayName and copied class values (armor, ItemInfo, stats…).\n\n" +
+                "LOST:  any comments you added, your manual formatting/layout, and any classes or " +
+                "properties you hand-wrote in the text that aren't part of the project's retextures.\n\n" +
+                "Continue?",
+                "Regenerate config — this discards manual text changes",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
         PreserveManualEdits();

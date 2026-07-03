@@ -9,7 +9,7 @@
     <RootNamespace>ReTex.App</RootNamespace>
     <AssemblyName>ReTex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.3.13</Version>
+    <Version>4.0.2</Version>
   </PropertyGroup>
 
   <ItemGroup>
