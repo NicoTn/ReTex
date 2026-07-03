@@ -27,8 +27,22 @@ public static class RapWriter
         foreach (var (key, val) in node.Properties)
         {
             if (skip.Contains(key)) continue;
-            sb.Append(pad).Append(key).Append(val.IsArray ? "[] = " : " = ")
-              .Append(Format(val)).AppendLine(";");
+
+            // Arrays print one element per line for readability; scalars stay inline. Nested arrays
+            // (arrays of arrays) keep their inner elements inline. No trailing comma - Arma rejects it.
+            if (val.IsArray && val.Raw is List<RapValue> arr && arr.Count > 0)
+            {
+                var innerPad = new string(' ', indent + 4);
+                sb.Append(pad).Append(key).AppendLine("[] = {");
+                for (int i = 0; i < arr.Count; i++)
+                    sb.Append(innerPad).Append(Format(arr[i])).AppendLine(i < arr.Count - 1 ? "," : "");
+                sb.Append(pad).AppendLine("};");
+            }
+            else
+            {
+                sb.Append(pad).Append(key).Append(val.IsArray ? "[] = " : " = ")
+                  .Append(Format(val)).AppendLine(";");
+            }
         }
 
         foreach (var sub in node.Classes)

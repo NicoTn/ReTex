@@ -79,12 +79,14 @@
 
             <!-- ROW 0: Mods | Assets | Detail + preview + project controls -->
             <Grid Grid.Row="0">
+                <!-- Proportional (star) widths so every column grows with the window instead of only
+                     the preview. Splitters still let the user rebalance; MinWidth keeps them usable. -->
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="280" MinWidth="200"/>
+                    <ColumnDefinition Width="1*" MinWidth="200"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="360" MinWidth="260"/>
+                    <ColumnDefinition Width="1.3*" MinWidth="260"/>
                     <ColumnDefinition Width="Auto"/>
-                    <ColumnDefinition Width="*" MinWidth="360"/>
+                    <ColumnDefinition Width="2.2*" MinWidth="360"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- Mods -->
@@ -132,13 +134,13 @@
 
                 <GridSplitter Grid.Column="3" Width="4" VerticalAlignment="Stretch"/>
 
-                <!-- Detail (top) + preview (grows) + project controls + entries (grows) -->
+                <!-- Detail (top) + preview (grows) + project controls. The retextures list moved to the
+                     bottom row (beside config.cpp) so it gets real height on small screens. -->
                 <Grid Grid.Column="4" Margin="6">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="2*" MinHeight="200"/>
+                        <RowDefinition Height="*" MinHeight="200"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="1*" MinHeight="130"/>
                     </Grid.RowDefinitions>
 
                     <!-- Asset detail -->
@@ -231,54 +233,6 @@
                         <CheckBox Content="Copy source values (armor/stats)"
                                   IsChecked="{Binding CopySourceValues}"/>
                     </StackPanel>
-
-                    <!-- Retextures in project: rich list + per-entry actions -->
-                    <DockPanel Grid.Row="3">
-                        <TextBlock DockPanel.Dock="Top" Text="Retextures in project" FontWeight="SemiBold"
-                                   Margin="0,0,0,4"/>
-                        <!-- Rename row -->
-                        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4">
-                            <Button DockPanel.Dock="Right" Content="Rename" Width="64" Margin="6,0,0,0"
-                                    Command="{Binding RenameEntryCommand}" ToolTip="Rename the selected retexture's class"/>
-                            <TextBox Text="{Binding RenameText, UpdateSourceTrigger=PropertyChanged}"
-                                     VerticalContentAlignment="Center" ToolTip="New class name for the selected retexture"/>
-                        </DockPanel>
-                        <StackPanel DockPanel.Dock="Right" VerticalAlignment="Top" Margin="6,0,0,0">
-                            <Button Content="Edit" Width="76" Command="{Binding EditEntryTexturesCommand}"
-                                    ToolTip="Open this retexture's .paa(s) in your default editor (GIMP/Photoshop)"/>
-                            <Button Content="Duplicate" Width="76" Margin="0,4,0,0" Command="{Binding DuplicateEntryCommand}"
-                                    ToolTip="Copy this retexture to a new class (shares the same texture files)"/>
-                            <Button Content="Remove" Width="76" Margin="0,4,0,0" Command="{Binding RemoveEntryCommand}"/>
-                        </StackPanel>
-                        <ListBox ItemsSource="{Binding ProjectEntries}" SelectedItem="{Binding SelectedEntry}"
-                                 HorizontalContentAlignment="Stretch">
-                            <ListBox.InputBindings>
-                                <KeyBinding Key="Delete" Command="{Binding RemoveEntryCommand}"/>
-                            </ListBox.InputBindings>
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <DockPanel>
-                                        <!-- ⚠ badge when a texture file is missing on disk -->
-                                        <TextBlock DockPanel.Dock="Right" Text="⚠" FontSize="13" Margin="6,0,0,0"
-                                                   VerticalAlignment="Center" Foreground="{StaticResource Accent.Warn}"
-                                                   ToolTip="One or more texture files for this retexture are missing on disk"
-                                                   Visibility="{Binding HasMissingTexture, Converter={StaticResource BoolToVisibility}}"/>
-                                        <StackPanel>
-                                            <TextBlock Text="{Binding NewClassName}" FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis"/>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Border Background="{StaticResource Bg.Chip}" CornerRadius="3" Padding="4,0" Margin="0,1,6,1">
-                                                    <TextBlock Text="{Binding Category}" Foreground="{StaticResource Fg.Primary}" FontSize="10"/>
-                                                </Border>
-                                                <TextBlock Foreground="{StaticResource Fg.Muted}" FontSize="11" VerticalAlignment="Center"
-                                                           Text="{Binding SelectionCount, StringFormat={}{0} selection(s)}"/>
-                                            </StackPanel>
-                                        </StackPanel>
-                                    </DockPanel>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </DockPanel>
                 </Grid>
             </Grid>
 
@@ -286,30 +240,91 @@
             <GridSplitter Grid.Row="1" Height="5" HorizontalAlignment="Stretch" VerticalAlignment="Center"
                           Background="{StaticResource Border.Muted}" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"/>
 
-            <!-- ROW 2: config.cpp editor (full width) with its action buttons -->
-            <DockPanel Grid.Row="2" Margin="6,2,6,6">
-                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-                    <TextBlock Text="config.cpp" Style="{StaticResource Heading}" VerticalAlignment="Center"/>
-                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Regenerate" Width="92" Command="{Binding RegenerateConfigCommand}"
-                                ToolTip="Rebuild config.cpp from the project's retextures (discards manual edits) — Ctrl+R"/>
-                        <Button Content="Save config" Width="92" Margin="8,0,0,0" Command="{Binding SaveConfigCommand}"
-                                ToolTip="Save the editor's config.cpp (Ctrl+S)"/>
-                        <Button Content="Pack @Mod" Width="92" Margin="8,0,0,0" Command="{Binding PackCommand}"
-                                ToolTip="Build a loadable @mod folder (Ctrl+Shift+P)"/>
-                        <Button Content="Open folder" Width="92" Margin="8,0,0,0" Command="{Binding OpenProjectFolderCommand}"/>
-                    </StackPanel>
+            <!-- ROW 2: Retextures-in-project list (left) | config.cpp editor (right) -->
+            <Grid Grid.Row="2" Margin="6,2,6,6">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1*" MinWidth="240"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="2.4*" MinWidth="360"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Retextures in project: rich list + per-entry actions (now full-height on the left) -->
+                <DockPanel Grid.Column="0">
+                    <TextBlock DockPanel.Dock="Top" Text="Retextures in project" Style="{StaticResource Heading}"
+                               VerticalAlignment="Center" Margin="0,0,0,6"/>
+                    <!-- Rename row -->
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Button DockPanel.Dock="Right" Content="Rename" Width="70" Margin="6,0,0,0"
+                                Command="{Binding RenameEntryCommand}" ToolTip="Rename the selected retexture's class"/>
+                        <TextBox Text="{Binding RenameText, UpdateSourceTrigger=PropertyChanged}"
+                                 VerticalContentAlignment="Center" ToolTip="New class name for the selected retexture"/>
+                    </DockPanel>
+                    <!-- Action buttons -->
+                    <UniformGrid DockPanel.Dock="Bottom" Rows="1" Columns="3" Margin="0,6,0,0">
+                        <Button Content="Edit" Margin="0,0,3,0" Command="{Binding EditEntryTexturesCommand}"
+                                ToolTip="Open this retexture's .paa(s) in your default editor (GIMP/Photoshop)"/>
+                        <Button Content="Duplicate" Margin="3,0,3,0" Command="{Binding DuplicateEntryCommand}"
+                                ToolTip="Copy this retexture to a new class (shares the same texture files)"/>
+                        <Button Content="Remove" Margin="3,0,0,0" Command="{Binding RemoveEntryCommand}"
+                                ToolTip="Remove the selected retexture (Del)"/>
+                    </UniformGrid>
+                    <ListBox ItemsSource="{Binding ProjectEntries}" SelectedItem="{Binding SelectedEntry}"
+                             HorizontalContentAlignment="Stretch">
+                        <ListBox.InputBindings>
+                            <KeyBinding Key="Delete" Command="{Binding RemoveEntryCommand}"/>
+                        </ListBox.InputBindings>
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <DockPanel>
+                                    <!-- ⚠ badge when a texture file is missing on disk -->
+                                    <TextBlock DockPanel.Dock="Right" Text="⚠" FontSize="13" Margin="6,0,0,0"
+                                               VerticalAlignment="Center" Foreground="{StaticResource Accent.Warn}"
+                                               ToolTip="One or more texture files for this retexture are missing on disk"
+                                               Visibility="{Binding HasMissingTexture, Converter={StaticResource BoolToVisibility}}"/>
+                                    <StackPanel>
+                                        <TextBlock Text="{Binding NewClassName}" FontWeight="SemiBold"
+                                                   TextTrimming="CharacterEllipsis"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Border Background="{StaticResource Bg.Chip}" CornerRadius="3" Padding="4,0" Margin="0,1,6,1">
+                                                <TextBlock Text="{Binding Category}" Foreground="{StaticResource Fg.Primary}" FontSize="10"/>
+                                            </Border>
+                                            <TextBlock Foreground="{StaticResource Fg.Muted}" FontSize="11" VerticalAlignment="Center"
+                                                       Text="{Binding SelectionCount, StringFormat={}{0} selection(s)}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DockPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
                 </DockPanel>
 
-                <!-- Config editor (AvalonEdit: syntax highlighting, line numbers, Ctrl+F find) -->
-                <avalonedit:TextEditor x:Name="ConfigEditor"
-                         local:AvalonEditBehaviour.BindableText="{Binding ConfigText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                         FontFamily="Consolas" FontSize="12"
-                         ShowLineNumbers="True" WordWrap="False"
-                         HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
-                         Background="{StaticResource Bg.Panel}" Foreground="{StaticResource Fg.Primary}"
-                         LineNumbersForeground="{StaticResource Line.Numbers}"/>
-            </DockPanel>
+                <GridSplitter Grid.Column="1" Width="4" VerticalAlignment="Stretch" Margin="6,0,6,0"/>
+
+                <!-- config.cpp editor + its action buttons -->
+                <DockPanel Grid.Column="2">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <TextBlock Text="config.cpp" Style="{StaticResource Heading}" VerticalAlignment="Center"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <Button Content="Regenerate" Width="92" Command="{Binding RegenerateConfigCommand}"
+                                    ToolTip="Rebuild config.cpp from the project's retextures (discards manual edits) — Ctrl+R"/>
+                            <Button Content="Save config" Width="92" Margin="8,0,0,0" Command="{Binding SaveConfigCommand}"
+                                    ToolTip="Save the editor's config.cpp (Ctrl+S)"/>
+                            <Button Content="Pack @Mod" Width="92" Margin="8,0,0,0" Command="{Binding PackCommand}"
+                                    ToolTip="Build a loadable @mod folder (Ctrl+Shift+P)"/>
+                            <Button Content="Open folder" Width="92" Margin="8,0,0,0" Command="{Binding OpenProjectFolderCommand}"/>
+                        </StackPanel>
+                    </DockPanel>
+
+                    <!-- Config editor (AvalonEdit: syntax highlighting, line numbers, Ctrl+F find) -->
+                    <avalonedit:TextEditor x:Name="ConfigEditor"
+                             local:AvalonEditBehaviour.BindableText="{Binding ConfigText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             FontFamily="Consolas" FontSize="12"
+                             ShowLineNumbers="True" WordWrap="False"
+                             HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"
+                             Background="{StaticResource Bg.Panel}" Foreground="{StaticResource Fg.Primary}"
+                             LineNumbersForeground="{StaticResource Line.Numbers}"/>
+                </DockPanel>
+            </Grid>
         </Grid>
     </DockPanel>
 </Window>

@@ -220,6 +220,54 @@ public static class RetexProjectService
         return Path.Combine("textures", fileName);
     }
 
+    /// <summary>
+    /// Folds manual edits from the current config text back into the project model so a later
+    /// regeneration preserves them instead of clobbering. For each entry (matched by
+    /// <see cref="RetexEntry.NewClassName"/>) it captures the edited <c>displayName</c> and, for
+    /// entries that carry a copied source body, re-captures that body (armor / ItemInfo / stats / …)
+    /// - with the project texture paths mapped back to their source form so the normal
+    /// repoint-on-generate still applies. Generator-owned keys (the scope trio, baseWeapon, model)
+    /// are never captured. Best-effort: a malformed edit must never block regeneration, so parse/IO
+    /// failures are swallowed and the model is left untouched. Caller regenerates afterwards.
+    /// </summary>
+    public static void PreserveManualEdits(RetexProject proj, string? configText)
+    {
+        if (string.IsNullOrWhiteSpace(configText)) return;
+        try
+        {
+            var root = Rap.CppConfigParser.Parse(configText);
+            // Keys the generator always emits itself - never fold these into the copied body.
+            var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model" };
+
+            bool changed = false;
+            foreach (var e in proj.Entries)
+            {
+                var node = root.FindDescendant(e.NewClassName);
+                if (node is null) continue;
+
+                // Edited display name (applies to every entry, uniforms included).
+                var dn = node.StringOr("displayName");
+                if (dn.Length > 0 && dn != e.DisplayName) { e.DisplayName = dn; changed = true; }
+
+                // Copied stat body: only entries that already carry one (uniforms are generated, not copied).
+                if (e.CopiedBody.Length > 0 && !e.IsUniform && !e.IsUniformUnit)
+                {
+                    var body = Rap.RapWriter.WriteBody(node, indent: 8, skip).TrimEnd('\r', '\n');
+                    // Map project texture paths back to source paths (reverse of generate's repoint) so
+                    // the stored body keeps the source-path contract and re-points cleanly next generate.
+                    foreach (var s in e.Selections)
+                        if (s.ProjectTexture.Length > 0 && s.SourceTexture.Length > 0)
+                            body = body.Replace(ConfigGenerator.ProjectVirtual(proj, s.ProjectTexture),
+                                                s.SourceTexture, StringComparison.OrdinalIgnoreCase);
+                    if (body.Length > 0 && body != e.CopiedBody) { e.CopiedBody = body; changed = true; }
+                }
+            }
+            if (changed) proj.Save();
+        }
+        catch { /* best-effort: never let a stray edit block regeneration */ }
+    }
+
     /// <summary>Writes config.cpp (and ensures $PBOPREFIX$) and saves retex.json. Consolidates any
     /// duplicate copied textures first (see <see cref="ConsolidateTextures"/>) so the generated
     /// config references only the shared files.</summary>

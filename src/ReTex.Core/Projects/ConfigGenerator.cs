@@ -27,10 +27,10 @@ public static class ConfigGenerator
         // CfgPatches
         sb.AppendLine("class CfgPatches {");
         sb.AppendLine($"    class {patchClass} {{");
-        sb.AppendLine($"        units[] = {{ {Join(vehicles.Select(e => Quote(e.NewClassName)))} }};");
-        sb.AppendLine($"        weapons[] = {{ {Join(weapons.Select(e => Quote(e.NewClassName)))} }};");
+        AppendArray(sb, "units[]", vehicles.Select(e => Quote(e.NewClassName)), 8);
+        AppendArray(sb, "weapons[]", weapons.Select(e => Quote(e.NewClassName)), 8);
         sb.AppendLine("        requiredVersion = 0.1;");
-        sb.AppendLine($"        requiredAddons[] = {{ {Join(required.Select(Quote))} }};");
+        AppendArray(sb, "requiredAddons[]", required.Select(Quote), 8);
         sb.AppendLine("    };");
         sb.AppendLine("};");
         sb.AppendLine();
@@ -83,7 +83,7 @@ public static class ConfigGenerator
             var selNames = e.Selections.Where(s => s.Name.Length > 0)
                 .OrderBy(s => s.Index).Select(s => s.Name).ToList();
             if (selNames.Count > 0 && !e.CopiedBody.Contains("hiddenSelections[]", StringComparison.OrdinalIgnoreCase))
-                sb.AppendLine($"        hiddenSelections[] = {{ {Join(selNames.Select(Quote))} }};");
+                AppendArray(sb, "hiddenSelections[]", selNames.Select(Quote), 8);
 
             if (e.CopiedBody.Length > 0)
             {
@@ -114,7 +114,7 @@ public static class ConfigGenerator
             {
                 // No copied values: emit a positional texture override (top-level only).
                 var textures = e.Selections.OrderBy(s => s.Index).Select(s => Quote(TextureFor(s, p)));
-                sb.AppendLine($"        hiddenSelectionsTextures[] = {{ {Join(textures)} }};");
+                AppendArray(sb, "hiddenSelectionsTextures[]", textures, 8);
             }
             sb.AppendLine("    };");
         }
@@ -172,12 +172,12 @@ public static class ConfigGenerator
         var selNames = e.Selections.Where(s => s.Name.Length > 0)
             .OrderBy(s => s.Index).Select(s => s.Name).ToList();
         if (selNames.Count > 0)
-            sb.AppendLine($"        hiddenSelections[] = {{ {Join(selNames.Select(Quote))} }};");
+            AppendArray(sb, "hiddenSelections[]", selNames.Select(Quote), 8);
 
         var textured = e.Selections.OrderBy(s => s.Index)
             .Where(s => s.ProjectTexture.Length > 0 || s.SourceTexture.Length > 0).ToList();
         if (textured.Count > 0)
-            sb.AppendLine($"        hiddenSelectionsTextures[] = {{ {Join(textured.Select(s => Quote(TextureFor(s, p))))} }};");
+            AppendArray(sb, "hiddenSelectionsTextures[]", textured.Select(s => Quote(TextureFor(s, p))), 8);
     }
 
     /// <summary>Virtual path of a selection's texture: project texture if retextured, else the original.</summary>
@@ -185,10 +185,14 @@ public static class ConfigGenerator
         s.ProjectTexture.Length > 0 ? ProjectVirtual(s, p) : s.SourceTexture;
 
     /// <summary>The in-game virtual path of a selection's copied project texture.</summary>
-    private static string ProjectVirtual(RetexSelection s, RetexProject p)
+    private static string ProjectVirtual(RetexSelection s, RetexProject p) => ProjectVirtual(p, s.ProjectTexture);
+
+    /// <summary>The in-game virtual path of a project-relative texture (e.g. "textures\foo.paa" =>
+    /// "\z\myretex\addons\main\textures\foo.paa"), derived from the project's $PBOPREFIX$.</summary>
+    public static string ProjectVirtual(RetexProject p, string projectTexture)
     {
         var prefix = p.Prefix.Replace('/', '\\').Trim('\\');
-        var rel = s.ProjectTexture.Replace('/', '\\').TrimStart('\\');
+        var rel = projectTexture.Replace('/', '\\').TrimStart('\\');
         return "\\" + prefix + "\\" + rel;
     }
 
@@ -208,7 +212,31 @@ public static class ConfigGenerator
     }
 
     private static string Quote(string s) => "\"" + s.Replace("\"", "\"\"") + "\"";
-    private static string Join(IEnumerable<string> items) => string.Join(", ", items);
+
+    /// <summary>
+    /// Emits an array initializer with one element per line, e.g.
+    /// <code>
+    ///         units[] =
+    ///         {
+    ///             "a",
+    ///             "b"
+    ///         };
+    /// </code>
+    /// Empty arrays stay inline (<c>{ }</c>). No trailing comma after the last element - Arma's config
+    /// parser rejects it. <paramref name="key"/> includes the <c>[]</c> suffix; <paramref name="indent"/>
+    /// is the column of the declaration (elements sit one level, 4 spaces, deeper).
+    /// </summary>
+    private static void AppendArray(StringBuilder sb, string key, IEnumerable<string> items, int indent)
+    {
+        var list = items.ToList();
+        var pad = new string(' ', indent);
+        if (list.Count == 0) { sb.AppendLine($"{pad}{key} = {{ }};"); return; }
+        var innerPad = new string(' ', indent + 4);
+        sb.AppendLine($"{pad}{key} = {{");
+        for (int i = 0; i < list.Count; i++)
+            sb.AppendLine($"{innerPad}{list[i]}{(i < list.Count - 1 ? "," : "")}");
+        sb.AppendLine($"{pad}}};");
+    }
 
     private static string Sanitize(string s)
     {

@@ -309,6 +309,7 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
+            PreserveManualEdits();
             if (_project is null) SetProject(CreateNewProject());
             var entry = RetexProjectService.AddRetexture(_project!, SelectedAsset, SelectedMod.PboPaths, indices: chosen, copyValues: CopySourceValues, modAssets: _allAssets);
             RetexProjectService.GenerateConfig(_project!);
@@ -562,6 +563,7 @@ public partial class MainViewModel : ObservableObject
 
         var mod = SelectedMod;
         var toAdd = Assets.ToList();
+        PreserveManualEdits();
         if (_project is null) SetProject(CreateNewProject());
         var proj = _project!;
 
@@ -590,6 +592,7 @@ public partial class MainViewModel : ObservableObject
         if (MessageBox.Show(prompt, "Remove retexture", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
+        PreserveManualEdits();
         // A uniform is two cross-linked entries (item + clothing unit); remove both halves together.
         if (pair)
             _project.Entries.RemoveAll(e =>
@@ -611,6 +614,8 @@ public partial class MainViewModel : ObservableObject
         var desired = (RenameText ?? "").Trim();
         if (desired.Length == 0) { SetStatus("Enter a new class name.", StatusSeverity.Warn); return; }
         if (desired.Equals(entry.NewClassName, StringComparison.Ordinal)) return;
+
+        PreserveManualEdits(); // capture edits against the CURRENT class name before it changes
 
         // Collision with a DIFFERENT entry? Refuse rather than silently mangling the name.
         if (_project.Entries.Any(e => e != entry && e.NewClassName.Equals(desired, StringComparison.OrdinalIgnoreCase)))
@@ -645,6 +650,7 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
+        PreserveManualEdits(); // so the clone inherits the source entry's current edits
         var clone = new RetexEntry
         {
             SourceClass = src.SourceClass,
@@ -666,15 +672,25 @@ public partial class MainViewModel : ObservableObject
         SetStatus($"Duplicated to {clone.NewClassName} (shares the same texture files).");
     }
 
+    /// <summary>Folds the config editor's manual edits (displayName, copied stats) back into the
+    /// project model so the next regeneration preserves them instead of clobbering.</summary>
+    private void PreserveManualEdits()
+    {
+        if (_project is null) return;
+        RetexProjectService.PreserveManualEdits(_project, ConfigText);
+    }
+
     [RelayCommand]
     private void RegenerateConfig()
     {
         if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
         if (MessageBox.Show(
-                "Regenerate config.cpp from the project's retextures? Any manual edits in the editor will be overwritten.",
-                "Regenerate config", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                "Rebuild config.cpp from the project? Your edits to displayName and copied class values are kept; " +
+                "structural parts (class list, texture paths, formatting) and any comments or hand-added classes are regenerated.",
+                "Regenerate config", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
             return;
 
+        PreserveManualEdits();
         int merged = RetexProjectService.ConsolidateTextures(_project); // count for the status line
         RetexProjectService.GenerateConfig(_project);                   // (also consolidates; idempotent)
         RefreshEntries();
@@ -724,18 +740,29 @@ public partial class MainViewModel : ObservableObject
             return;
         }
 
-        File.WriteAllText(_project.ConfigPath, ConfigText); // pack what's shown
-        var tool = new PboTool(pboc);
-        SetStatus("Packing...");
-        var res = await RetexProjectService.PackModAsync(_project, tool);
-        if (res.Success)
+        try
         {
-            SetStatus($"Packed mod -> {RetexProjectService.ModFolder(_project)}");
-            WarnIfMissingTextures(_project);
+            Directory.CreateDirectory(_project.AddonDir);          // in case the folder was moved/removed
+            File.WriteAllText(_project.ConfigPath, ConfigText);    // pack what's shown
+            var tool = new PboTool(pboc);
+            SetStatus("Packing...");
+            var res = await RetexProjectService.PackModAsync(_project, tool);
+            if (res.Success)
+            {
+                SetStatus($"Packed mod -> {RetexProjectService.ModFolder(_project)}");
+                WarnIfMissingTextures(_project);
+            }
+            else
+            {
+                var detail = res.StdErr.Trim();
+                if (detail.Length == 0) detail = res.StdOut.Trim();
+                SetStatus($"Pack failed (exit {res.ExitCode}): {detail}", StatusSeverity.Error);
+            }
         }
-        else
+        catch (Exception ex)
         {
-            SetStatus($"Pack failed (exit {res.ExitCode}): {res.StdErr}", StatusSeverity.Error);
+            // e.g. pboc.exe can't be launched, or a file is locked. Report instead of crashing.
+            SetStatus($"Pack failed: {ex.Message}", StatusSeverity.Error);
         }
     }
 
