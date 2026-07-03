@@ -16,6 +16,39 @@ public sealed class AppSettings
     /// <summary>True once the user has gone through Settings at least once (suppresses the automatic first-run prompt).</summary>
     public bool SetupCompleted { get; set; }
 
+    /// <summary>Most-recently-used project files (full path to retex.json), newest first. Capped and de-duplicated.</summary>
+    public List<string> RecentProjects { get; set; } = new();
+
+    /// <summary>Default author stamped onto new projects (retex.json + mod.cpp). Empty = none.</summary>
+    public string DefaultAuthor { get; set; } = "";
+
+    /// <summary>$PBOPREFIX$ template for new projects. "{slug}" is replaced with the sanitized project name.
+    /// Empty falls back to the built-in "z\{slug}\addons\main".</summary>
+    public string DefaultPrefixTemplate { get; set; } = @"z\{slug}\addons\main";
+
+    // --- Main window layout (persisted so the app reopens where you left it) ---
+    public double WindowWidth { get; set; }
+    public double WindowHeight { get; set; }
+    public double WindowLeft { get; set; } = double.NaN;
+    public double WindowTop { get; set; } = double.NaN;
+    public bool WindowMaximized { get; set; }
+    /// <summary>Height (in star units, stored as a raw double) of the browse/preview row above the config editor.</summary>
+    public double BrowseRowHeight { get; set; }
+
+    private const int MaxRecent = 8;
+
+    /// <summary>Pushes a project file to the top of the MRU list (de-duplicated, capped).</summary>
+    public void PushRecentProject(string projectFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(projectFilePath)) return;
+        RecentProjects.RemoveAll(p => string.Equals(p, projectFilePath, StringComparison.OrdinalIgnoreCase));
+        RecentProjects.Insert(0, projectFilePath);
+        if (RecentProjects.Count > MaxRecent) RecentProjects.RemoveRange(MaxRecent, RecentProjects.Count - MaxRecent);
+    }
+
+    /// <summary>Drops MRU entries whose file no longer exists (e.g. project deleted/moved).</summary>
+    public void PruneRecentProjects() => RecentProjects.RemoveAll(p => !File.Exists(p));
+
     private static string Dir =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ReTex");
     private static string FilePath => Path.Combine(Dir, "settings.json");

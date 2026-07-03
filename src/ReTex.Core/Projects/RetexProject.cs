@@ -50,6 +50,13 @@ public sealed class RetexEntry
     public string PartnerClass { get; set; } = "";
 
     public List<RetexSelection> Selections { get; set; } = new();
+
+    /// <summary>UI-only flag (not persisted): set when one of this entry's ProjectTexture files is
+    /// missing on disk, so the entry list can badge it. Recomputed when the project list is rebuilt.</summary>
+    [JsonIgnore] public bool HasMissingTexture { get; set; }
+
+    /// <summary>UI-only convenience (not persisted): number of selections this entry retextures.</summary>
+    [JsonIgnore] public int SelectionCount => Selections.Count;
 }
 
 /// <summary>A retexture mod project: one addon PBO holding multiple retextures.</summary>

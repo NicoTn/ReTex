@@ -3,17 +3,17 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:ReTex.App.ViewModels"
         xmlns:conv="clr-namespace:ReTex.App.Converters"
-        Title="ReTex Settings" Height="420" Width="620"
+        Title="ReTex Settings" Height="560" Width="620"
         WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
-        Background="#111827">
+        Background="{StaticResource Bg.Status}">
 
     <Window.Resources>
         <conv:BoolToStatusBrushConverter x:Key="OkToBrush"/>
         <Style TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#D1D5DB"/>
+            <Setter Property="Foreground" Value="{StaticResource Fg.Primary}"/>
         </Style>
         <Style x:Key="Hint" TargetType="TextBlock">
-            <Setter Property="Foreground" Value="#6B7280"/>
+            <Setter Property="Foreground" Value="{StaticResource Fg.Muted}"/>
             <Setter Property="FontSize" Value="11"/>
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="Margin" Value="0,2,0,0"/>
@@ -62,7 +62,7 @@
             <TextBlock Style="{StaticResource Status}" Text="{Binding ProjectsRootStatus}"
                        Foreground="{Binding ProjectsRootOk, Converter={StaticResource OkToBrush}}"/>
 
-            <Separator Margin="0,14" Background="#374151"/>
+            <Separator Margin="0,14" Background="{StaticResource Border.Muted}"/>
 
             <!-- pboc.exe -->
             <TextBlock Text="pboc.exe (PBO Manager CLI)" FontWeight="Bold"/>
@@ -77,6 +77,29 @@
             </DockPanel>
             <TextBlock Style="{StaticResource Status}" Text="{Binding PbocStatus}"
                        Foreground="{Binding PbocOk, Converter={StaticResource OkToBrush}}"/>
+
+            <Separator Margin="0,14" Background="{StaticResource Border.Muted}"/>
+
+            <!-- New-project defaults -->
+            <TextBlock Text="New-project defaults" FontWeight="Bold"/>
+            <TextBlock Style="{StaticResource Hint}"
+                       Text="Applied when you create a new project. The prefix template's {slug} is replaced with the sanitized project name."/>
+            <Grid Margin="0,6,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="Author" VerticalAlignment="Center" Margin="0,0,8,6"/>
+                <TextBox Grid.Row="0" Grid.Column="1" Margin="0,0,0,6" VerticalContentAlignment="Center"
+                         Text="{Binding DefaultAuthor, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="Prefix" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <TextBox Grid.Row="1" Grid.Column="1" VerticalContentAlignment="Center"
+                         Text="{Binding DefaultPrefixTemplate, UpdateSourceTrigger=PropertyChanged}"/>
+            </Grid>
         </StackPanel>
     </DockPanel>
 </Window>

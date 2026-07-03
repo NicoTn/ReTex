@@ -4,6 +4,14 @@
              xmlns:conv="clr-namespace:ReTex.App.Converters"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <conv:FileNameConverter x:Key="FileNameConverter"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Theme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            <conv:FileNameConverter x:Key="FileNameConverter"/>
+            <conv:StatusSeverityToBrushConverter x:Key="StatusSeverityToBrush"/>
+            <conv:ProjectPathToNameConverter x:Key="ProjectPathToName"/>
+            <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

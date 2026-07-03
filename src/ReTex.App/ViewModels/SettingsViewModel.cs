@@ -14,6 +14,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private string _workshopPath;
     [ObservableProperty] private string _projectsRoot;
     [ObservableProperty] private string _pbocPath;
+    [ObservableProperty] private string _defaultAuthor;
+    [ObservableProperty] private string _defaultPrefixTemplate;
 
     [ObservableProperty] private string _workshopStatus = "";
     [ObservableProperty] private bool _workshopOk;
@@ -31,6 +33,9 @@ public partial class SettingsViewModel : ObservableObject
         _workshopPath = settings.WorkshopPath;
         _projectsRoot = settings.ProjectsRoot;
         _pbocPath = settings.PbocPath;
+        _defaultAuthor = settings.DefaultAuthor;
+        _defaultPrefixTemplate = string.IsNullOrWhiteSpace(settings.DefaultPrefixTemplate)
+            ? @"z\{slug}\addons\main" : settings.DefaultPrefixTemplate;
         Revalidate();
     }
 
@@ -172,6 +177,9 @@ public partial class SettingsViewModel : ObservableObject
         _settings.WorkshopPath = WorkshopPath;
         _settings.ProjectsRoot = ProjectsRoot;
         _settings.PbocPath = PbocPath;
+        _settings.DefaultAuthor = (DefaultAuthor ?? "").Trim();
+        _settings.DefaultPrefixTemplate = string.IsNullOrWhiteSpace(DefaultPrefixTemplate)
+            ? @"z\{slug}\addons\main" : DefaultPrefixTemplate.Trim();
         _settings.SetupCompleted = true;
         _settings.Save();
         Saved = true;

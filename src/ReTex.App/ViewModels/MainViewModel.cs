@@ -4,6 +4,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
+using System.Windows.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using ReTex.Core.Assets;
@@ -16,12 +17,16 @@ using ReTex.Core.Tools;
 
 namespace ReTex.App.ViewModels;
 
+/// <summary>Status-line severity, drives the status bar colour.</summary>
+public enum StatusSeverity { Info, Warn, Error }
+
 public partial class MainViewModel : ObservableObject
 {
     private readonly AppSettings _settings = AppSettings.Load();
 
     [ObservableProperty] private string _workshopPath = "";
     [ObservableProperty] private string _status = "Pick a mod and scan.";
+    [ObservableProperty] private StatusSeverity _statusSeverity = StatusSeverity.Info;
 
     // --- Mods ---
     public ObservableCollection<ArmaMod> Mods { get; } = new();
@@ -52,15 +57,44 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private string _configText = "";
     [ObservableProperty] private bool _copySourceValues = true;
     [ObservableProperty] private RetexEntry? _selectedEntry;
+    [ObservableProperty] private string _renameText = "";
+    [ObservableProperty] private string _currentProjectName = "(no project)";
+    [ObservableProperty] private string _currentProjectPath = "";
     public ObservableCollection<RetexEntry> ProjectEntries { get; } = new();
+    /// <summary>Recent project files (full path to retex.json), newest first.</summary>
+    public ObservableCollection<string> RecentProjects { get; } = new();
+    /// <summary>Bound to the "Recent" combo; selecting an item opens it then resets to null so the same
+    /// item can be picked again.</summary>
+    [ObservableProperty] private string? _selectedRecent;
     private RetexProject? _project;
+
+    // --- Tooling status ---
+    [ObservableProperty] private bool _pbocReady;
+    [ObservableProperty] private string _pbocTooltip = "";
+
+    // Re-fires the preview shortly after a project .paa changes on disk (external editor save).
+    private FileSystemWatcher? _texWatcher;
+    private readonly DispatcherTimer _texDebounce;
 
     public MainViewModel()
     {
         WorkshopPath = _settings.WorkshopPath;
         ProjectsRoot = _settings.ProjectsRoot;
+        LoadRecents();
+        RefreshPbocStatus();
+        _texDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
+        _texDebounce.Tick += (_, _) => { _texDebounce.Stop(); RefreshPreview(); };
         if (Directory.Exists(WorkshopPath)) ScanWorkshop();
     }
+
+    /// <summary>Sets the status line text and severity in one call.</summary>
+    private void SetStatus(string message, StatusSeverity severity = StatusSeverity.Info)
+    {
+        Status = message;
+        StatusSeverity = severity;
+    }
+
+    // ---------------------------------------------------------------- first-run / settings
 
     /// <summary>
     /// Called once the main window is loaded. If the workshop folder can't be found and the
@@ -84,7 +118,15 @@ public partial class MainViewModel : ObservableObject
 
         WorkshopPath = _settings.WorkshopPath;
         ProjectsRoot = _settings.ProjectsRoot;
+        RefreshPbocStatus();
         if (Directory.Exists(WorkshopPath)) ScanWorkshop();
+    }
+
+    [RelayCommand]
+    private void ShowAbout()
+    {
+        var window = new AboutWindow { Owner = Application.Current.MainWindow };
+        window.ShowDialog();
     }
 
     partial void OnWorkshopPathChanged(string value)
@@ -99,6 +141,18 @@ public partial class MainViewModel : ObservableObject
         _settings.Save();
     }
 
+    /// <summary>Recomputes whether pboc.exe is available (used for the up-front toolbar indicator).</summary>
+    private void RefreshPbocStatus()
+    {
+        var pboc = File.Exists(_settings.PbocPath) ? _settings.PbocPath : PboTool.FindDefault();
+        PbocReady = pboc is not null;
+        PbocTooltip = PbocReady
+            ? $"pboc.exe ready — {pboc}"
+            : "pboc.exe not found. Install PBO Manager or set its path in Settings (needed only for \"Pack @Mod\").";
+    }
+
+    // ---------------------------------------------------------------- scanning / assets
+
     [RelayCommand]
     private void ScanWorkshop()
     {
@@ -107,9 +161,9 @@ public partial class MainViewModel : ObservableObject
         {
             _allMods = ModScanner.ScanFolder(WorkshopPath);
             ApplyModFilter();
-            Status = $"{_allMods.Count} mods in {WorkshopPath}";
+            SetStatus($"{_allMods.Count} mods in {WorkshopPath}");
         }
-        catch (Exception ex) { Status = $"Scan failed: {ex.Message}"; }
+        catch (Exception ex) { SetStatus($"Scan failed: {ex.Message}", StatusSeverity.Error); }
     }
 
     partial void OnModSearchChanged(string value) => ApplyModFilter();
@@ -138,7 +192,7 @@ public partial class MainViewModel : ObservableObject
         var mod = SelectedMod;
         if (mod is null) return;
 
-        Status = $"Loading assets from {mod.DisplayName}...";
+        SetStatus($"Loading assets from {mod.DisplayName}...");
         _allAssets = await Task.Run(() => AssetService.LoadForMod(mod));
 
         // Rebuild the PBO (sub-mod) list from the loaded assets.
@@ -150,7 +204,7 @@ public partial class MainViewModel : ObservableObject
         PboFilter = AllPbos;
 
         ApplyAssetFilter();
-        Status = $"{mod.DisplayName}: {_allAssets.Count} retexturable assets in {PboNames.Count - 1} PBOs";
+        SetStatus($"{mod.DisplayName}: {_allAssets.Count} retexturable assets in {PboNames.Count - 1} PBOs");
     }
 
     partial void OnAssetSearchChanged(string value) => ApplyAssetFilter();
@@ -221,36 +275,67 @@ public partial class MainViewModel : ObservableObject
             Assets.Add(a);
     }
 
+    // ---------------------------------------------------------------- projects
+
+    /// <summary>Points the view model at a project: updates the header, MRU and texture watcher.</summary>
+    private void SetProject(RetexProject proj)
+    {
+        _project = proj;
+        CurrentProjectName = proj.Name;
+        CurrentProjectPath = proj.ProjectFilePath;
+        _settings.PushRecentProject(proj.ProjectFilePath);
+        _settings.Save();
+        LoadRecents();
+        SetupTextureWatcher();
+    }
+
+    /// <summary>Loads the MRU list from settings, dropping projects whose file no longer exists.</summary>
+    private void LoadRecents()
+    {
+        _settings.PruneRecentProjects();
+        _settings.Save();
+        RecentProjects.Clear();
+        foreach (var p in _settings.RecentProjects) RecentProjects.Add(p);
+    }
+
     [RelayCommand]
     private void RetextureSelected()
     {
-        if (SelectedAsset is null || SelectedMod is null) { Status = "Select an asset first."; return; }
+        if (SelectedAsset is null || SelectedMod is null) { SetStatus("Select an asset first.", StatusSeverity.Warn); return; }
 
         var indices = AssetSelections.Where(s => s.Selected).Select(s => s.Index).ToList();
-        if (AssetSelections.Count > 0 && indices.Count == 0) { Status = "Tick at least one selection to retexture."; return; }
+        if (AssetSelections.Count > 0 && indices.Count == 0) { SetStatus("Tick at least one selection to retexture.", StatusSeverity.Warn); return; }
         IReadOnlyCollection<int>? chosen = AssetSelections.Count > 0 ? indices : null;
 
         try
         {
-            _project ??= RetexProjectService.CreateProject(ProjectsRoot, ProjectName);
-            var entry = RetexProjectService.AddRetexture(_project, SelectedAsset, SelectedMod.PboPaths, indices: chosen, copyValues: CopySourceValues, modAssets: _allAssets);
-            RetexProjectService.GenerateConfig(_project);
+            if (_project is null) SetProject(CreateNewProject());
+            var entry = RetexProjectService.AddRetexture(_project!, SelectedAsset, SelectedMod.PboPaths, indices: chosen, copyValues: CopySourceValues, modAssets: _allAssets);
+            RetexProjectService.GenerateConfig(_project!);
             RefreshEntries();
-            ConfigText = File.ReadAllText(_project.ConfigPath);
+            ConfigText = File.ReadAllText(_project!.ConfigPath);
             var copied = entry.Selections.Count(s => s.ProjectTexture.Length > 0);
-            Status = $"Added {entry.NewClassName} ({copied} texture(s) copied). Project: {_project.ProjectDir}";
+            SetStatus($"Added {entry.NewClassName} ({copied} texture(s) copied). Project: {_project.ProjectDir}");
         }
-        catch (Exception ex) { Status = $"Retexture failed: {ex.Message}"; }
+        catch (Exception ex) { SetStatus($"Retexture failed: {ex.Message}", StatusSeverity.Error); }
+    }
+
+    /// <summary>Creates a project under ProjectsRoot using the configured author + prefix template.</summary>
+    private RetexProject CreateNewProject()
+    {
+        var prefix = RetexProjectService.ExpandPrefix(_settings.DefaultPrefixTemplate, ProjectName);
+        return RetexProjectService.CreateProject(ProjectsRoot, ProjectName, prefix, _settings.DefaultAuthor);
     }
 
     [RelayCommand]
     private void NewProject()
     {
-        _project = RetexProjectService.CreateProject(ProjectsRoot, ProjectName);
-        RetexProjectService.GenerateConfig(_project);
+        var proj = CreateNewProject();
+        RetexProjectService.GenerateConfig(proj);
+        SetProject(proj);
         RefreshEntries();
-        ConfigText = File.ReadAllText(_project.ConfigPath);
-        Status = $"New project: {_project.ProjectDir}";
+        ConfigText = File.ReadAllText(proj.ConfigPath);
+        SetStatus($"New project: {proj.ProjectDir}");
     }
 
     [RelayCommand]
@@ -262,17 +347,47 @@ public partial class MainViewModel : ObservableObject
             InitialDirectory = Directory.Exists(ProjectsRoot) ? ProjectsRoot : null,
         };
         if (dlg.ShowDialog() != true) return;
+        OpenProjectFile(dlg.FileName);
+    }
+
+    partial void OnSelectedRecentChanged(string? value)
+    {
+        if (value is null) return;
+        var path = value;
+        SelectedRecent = null;      // reset so re-picking the same entry fires again
+        OpenRecent(path);
+    }
+
+    /// <summary>Opens a project from the recents list.</summary>
+    [RelayCommand]
+    private void OpenRecent(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return;
+        if (!File.Exists(path))
+        {
+            SetStatus("That project file no longer exists; removing it from recents.", StatusSeverity.Warn);
+            _settings.RecentProjects.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+            _settings.Save();
+            LoadRecents();
+            return;
+        }
+        OpenProjectFile(path);
+    }
+
+    private void OpenProjectFile(string projectFilePath)
+    {
         try
         {
-            _project = RetexProject.Load(dlg.FileName);
-            ProjectName = _project.Name;
-            ProjectsRoot = Path.GetDirectoryName(_project.ProjectDir) ?? ProjectsRoot;
+            var proj = RetexProject.Load(projectFilePath);
+            ProjectName = proj.Name;
+            ProjectsRoot = Path.GetDirectoryName(proj.ProjectDir) ?? ProjectsRoot;
+            SetProject(proj);
             RefreshEntries();
-            ConfigText = File.Exists(_project.ConfigPath) ? File.ReadAllText(_project.ConfigPath) : "";
-            Status = $"Opened {_project.Name} ({_project.Entries.Count} retextures)";
-            WarnIfMissingTextures(_project);
+            ConfigText = File.Exists(proj.ConfigPath) ? File.ReadAllText(proj.ConfigPath) : "";
+            SetStatus($"Opened {proj.Name} ({proj.Entries.Count} retextures)");
+            WarnIfMissingTextures(proj);
         }
-        catch (Exception ex) { Status = $"Open failed: {ex.Message}"; }
+        catch (Exception ex) { SetStatus($"Open failed: {ex.Message}", StatusSeverity.Error); }
     }
 
     /// <summary>
@@ -284,11 +399,12 @@ public partial class MainViewModel : ObservableObject
     {
         var missing = RetexProjectService.FindMissingTextures(proj);
         if (missing.Count == 0) return;
-        Status += $"  ⚠ {missing.Count} texture reference(s) point at missing files: {string.Join("; ", missing)}";
+        SetStatus($"{Status}  ⚠ {missing.Count} texture reference(s) point at missing files: {string.Join("; ", missing)}", StatusSeverity.Warn);
     }
 
     partial void OnSelectedEntryChanged(RetexEntry? value)
     {
+        RenameText = value?.NewClassName ?? "";
         if (_project is null || value is null) return;
         var rel = value.Selections.FirstOrDefault(s => s.ProjectTexture.Length > 0)?.ProjectTexture;
         if (rel is not null) _ = LoadProjectPreview(Path.Combine(_project.AddonDir, rel));
@@ -379,37 +495,77 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex) { PreviewInfo = $"(preview failed: {ex.Message})"; }
     }
 
+    /// <summary>Re-runs the preview for whatever is currently selected. Used by the Refresh button
+    /// and the texture-file watcher so an external .paa edit shows up without reselecting.</summary>
+    [RelayCommand]
+    private void RefreshPreview()
+    {
+        if (SelectedEntry is not null) { OnSelectedEntryChanged(SelectedEntry); SetStatus("Preview refreshed."); }
+        else if (SelectedAsset is not null) OnSelectedAssetChanged(SelectedAsset);
+    }
+
+    /// <summary>Watches the open project's textures folder so saving a .paa from an external editor
+    /// refreshes the preview automatically (debounced to coalesce the burst editors emit on save).</summary>
+    private void SetupTextureWatcher()
+    {
+        _texWatcher?.Dispose();
+        _texWatcher = null;
+        if (_project is null) return;
+        try
+        {
+            Directory.CreateDirectory(_project.TexturesDir);
+            var w = new FileSystemWatcher(_project.TexturesDir, "*.paa")
+            {
+                IncludeSubdirectories = false,
+                NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
+                EnableRaisingEvents = true,
+            };
+            void OnChanged(object? _, FileSystemEventArgs __) => OnTextureFileChanged();
+            w.Changed += OnChanged;
+            w.Created += OnChanged;
+            w.Renamed += (_, __) => OnTextureFileChanged();
+            _texWatcher = w;
+        }
+        catch { /* watching is a nicety; ignore if the folder can't be watched */ }
+    }
+
+    private void OnTextureFileChanged()
+    {
+        // Marshal to the UI thread and (re)start the debounce timer; the Tick refreshes the preview.
+        Application.Current?.Dispatcher.Invoke(() => { _texDebounce.Stop(); _texDebounce.Start(); });
+    }
+
     /// <summary>Opens the selected retexture's copied .paa(s) in the OS default editor (GIMP/Photoshop with a PAA plugin).</summary>
     [RelayCommand]
     private void EditEntryTextures()
     {
-        if (_project is null || SelectedEntry is null) { Status = "Select a retexture in the project first."; return; }
+        if (_project is null || SelectedEntry is null) { SetStatus("Select a retexture in the project first.", StatusSeverity.Warn); return; }
         var files = SelectedEntry.Selections
             .Where(s => s.ProjectTexture.Length > 0)
             .Select(s => Path.Combine(_project.AddonDir, s.ProjectTexture))
             .Where(File.Exists).Distinct().ToList();
-        if (files.Count == 0) { Status = "This retexture has no copied textures."; return; }
+        if (files.Count == 0) { SetStatus("This retexture has no copied textures.", StatusSeverity.Warn); return; }
         foreach (var f in files)
         {
             try { Process.Start(new ProcessStartInfo(f) { UseShellExecute = true }); }
-            catch (Exception ex) { Status = $"Open failed: {ex.Message}"; return; }
+            catch (Exception ex) { SetStatus($"Open failed: {ex.Message}", StatusSeverity.Error); return; }
         }
-        Status = $"Opened {files.Count} texture(s) in your default .paa editor. Save in place, then reselect to preview.";
+        SetStatus($"Opened {files.Count} texture(s) in your default .paa editor. Save in place — the preview refreshes automatically.");
     }
 
     /// <summary>Adds every currently-listed (filtered) asset to the project in one go.</summary>
     [RelayCommand]
     private async Task RetextureAllListed()
     {
-        if (SelectedMod is null) { Status = "Pick a mod first."; return; }
-        if (Assets.Count == 0) { Status = "No assets listed."; return; }
+        if (SelectedMod is null) { SetStatus("Pick a mod first.", StatusSeverity.Warn); return; }
+        if (Assets.Count == 0) { SetStatus("No assets listed.", StatusSeverity.Warn); return; }
 
         var mod = SelectedMod;
         var toAdd = Assets.ToList();
-        _project ??= RetexProjectService.CreateProject(ProjectsRoot, ProjectName);
-        var proj = _project;
+        if (_project is null) SetProject(CreateNewProject());
+        var proj = _project!;
 
-        Status = $"Batch retexturing {toAdd.Count} assets…";
+        SetStatus($"Batch retexturing {toAdd.Count} assets…");
         int n = await Task.Run(() =>
         {
             int c = 0;
@@ -419,35 +575,113 @@ public partial class MainViewModel : ObservableObject
         });
         RefreshEntries();
         ConfigText = File.ReadAllText(proj.ConfigPath);
-        Status = $"Batch: added {n} retextures to {proj.Name}.";
+        SetStatus($"Batch: added {n} retextures to {proj.Name}.");
     }
 
     [RelayCommand]
     private void RemoveEntry()
     {
         if (_project is null || SelectedEntry is null) return;
+        var name = SelectedEntry.NewClassName;
+        bool pair = SelectedEntry.PartnerClass.Length > 0 && (SelectedEntry.IsUniform || SelectedEntry.IsUniformUnit);
+        var prompt = pair
+            ? $"Remove retexture '{name}' and its paired uniform unit?"
+            : $"Remove retexture '{name}'?";
+        if (MessageBox.Show(prompt, "Remove retexture", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+
         // A uniform is two cross-linked entries (item + clothing unit); remove both halves together.
-        if (SelectedEntry.PartnerClass.Length > 0 && (SelectedEntry.IsUniform || SelectedEntry.IsUniformUnit))
+        if (pair)
             _project.Entries.RemoveAll(e =>
                 e.NewClassName.Equals(SelectedEntry.PartnerClass, StringComparison.OrdinalIgnoreCase));
         _project.Entries.Remove(SelectedEntry);
         RetexProjectService.GenerateConfig(_project);
         RefreshEntries();
         ConfigText = File.ReadAllText(_project.ConfigPath);
-        Status = "Removed retexture.";
+        SetStatus($"Removed {name}.");
+    }
+
+    /// <summary>Renames the selected entry's generated class (RenameText). The config is regenerated
+    /// so the new class name is reflected everywhere it's referenced.</summary>
+    [RelayCommand]
+    private void RenameEntry()
+    {
+        if (_project is null || SelectedEntry is null) { SetStatus("Select a retexture to rename.", StatusSeverity.Warn); return; }
+        var entry = SelectedEntry;
+        var desired = (RenameText ?? "").Trim();
+        if (desired.Length == 0) { SetStatus("Enter a new class name.", StatusSeverity.Warn); return; }
+        if (desired.Equals(entry.NewClassName, StringComparison.Ordinal)) return;
+
+        // Collision with a DIFFERENT entry? Refuse rather than silently mangling the name.
+        if (_project.Entries.Any(e => e != entry && e.NewClassName.Equals(desired, StringComparison.OrdinalIgnoreCase)))
+        {
+            SetStatus($"A retexture named '{desired}' already exists.", StatusSeverity.Warn);
+            return;
+        }
+
+        var oldName = entry.NewClassName;
+        entry.NewClassName = RetexProjectService.MakeUniqueClassName(_project, desired);
+        // Keep a uniform pair's back-reference in sync: the partner unit points at us by class name.
+        foreach (var e in _project.Entries)
+            if (e != entry && e.PartnerClass.Equals(oldName, StringComparison.OrdinalIgnoreCase))
+                e.PartnerClass = entry.NewClassName;
+        RetexProjectService.GenerateConfig(_project);
+        RefreshEntries();
+        SelectedEntry = _project.Entries.FirstOrDefault(e => e.NewClassName.Equals(entry.NewClassName, StringComparison.Ordinal));
+        ConfigText = File.ReadAllText(_project.ConfigPath);
+        SetStatus($"Renamed to {entry.NewClassName}.");
+    }
+
+    /// <summary>Duplicates the selected entry (new unique class name, reusing its already-copied
+    /// texture files). Uniform pairs are skipped — their cross-links make a clone non-trivial.</summary>
+    [RelayCommand]
+    private void DuplicateEntry()
+    {
+        if (_project is null || SelectedEntry is null) { SetStatus("Select a retexture to duplicate.", StatusSeverity.Warn); return; }
+        var src = SelectedEntry;
+        if (src.IsUniform || src.IsUniformUnit)
+        {
+            SetStatus("Duplicating uniform pairs isn't supported — retexture the uniform again instead.", StatusSeverity.Warn);
+            return;
+        }
+
+        var clone = new RetexEntry
+        {
+            SourceClass = src.SourceClass,
+            Category = src.Category,
+            SourceModel = src.SourceModel,
+            SourceAddon = src.SourceAddon,
+            DisplayName = src.DisplayName,
+            NewClassName = RetexProjectService.MakeUniqueClassName(_project, src.NewClassName + "_copy"),
+            CopiedBody = src.CopiedBody,
+            Selections = src.Selections
+                .Select(s => new RetexSelection { Index = s.Index, Name = s.Name, SourceTexture = s.SourceTexture, ProjectTexture = s.ProjectTexture })
+                .ToList(),
+        };
+        _project.Entries.Add(clone);
+        RetexProjectService.GenerateConfig(_project);
+        RefreshEntries();
+        SelectedEntry = _project.Entries.FirstOrDefault(e => e.NewClassName.Equals(clone.NewClassName, StringComparison.Ordinal));
+        ConfigText = File.ReadAllText(_project.ConfigPath);
+        SetStatus($"Duplicated to {clone.NewClassName} (shares the same texture files).");
     }
 
     [RelayCommand]
     private void RegenerateConfig()
     {
-        if (_project is null) { Status = "No project yet."; return; }
+        if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
+        if (MessageBox.Show(
+                "Regenerate config.cpp from the project's retextures? Any manual edits in the editor will be overwritten.",
+                "Regenerate config", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+            return;
+
         int merged = RetexProjectService.ConsolidateTextures(_project); // count for the status line
         RetexProjectService.GenerateConfig(_project);                   // (also consolidates; idempotent)
         RefreshEntries();
         ConfigText = File.ReadAllText(_project.ConfigPath);
-        Status = merged > 0
+        SetStatus(merged > 0
             ? $"Regenerated config; merged {merged} duplicate texture file(s) into shared copies."
-            : "Regenerated config from project entries (manual edits overwritten).";
+            : "Regenerated config from project entries (manual edits overwritten).");
         WarnIfMissingTextures(_project);
     }
 
@@ -455,43 +689,58 @@ public partial class MainViewModel : ObservableObject
     {
         ProjectEntries.Clear();
         if (_project is null) return;
-        foreach (var e in _project.Entries) ProjectEntries.Add(e);
+        foreach (var e in _project.Entries)
+        {
+            e.HasMissingTexture = e.Selections.Any(s =>
+                s.ProjectTexture.Length > 0 && !File.Exists(Path.Combine(_project.AddonDir, s.ProjectTexture)));
+            ProjectEntries.Add(e);
+        }
     }
 
     [RelayCommand]
     private void SaveConfig()
     {
-        if (_project is null) { Status = "No project yet."; return; }
+        if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
         File.WriteAllText(_project.ConfigPath, ConfigText);
-        Status = "Saved config.cpp";
+        SetStatus("Saved config.cpp");
     }
 
     [RelayCommand]
     private void OpenProjectFolder()
     {
-        if (_project is null) { Status = "No project yet."; return; }
+        if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
         Process.Start(new ProcessStartInfo("explorer.exe", $"\"{_project.ProjectDir}\"") { UseShellExecute = true });
     }
 
     [RelayCommand]
     private async Task Pack()
     {
-        if (_project is null) { Status = "No project yet."; return; }
+        if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
         var pboc = File.Exists(_settings.PbocPath) ? _settings.PbocPath : PboTool.FindDefault();
         if (pboc is null)
         {
-            Status = "pboc.exe not found. Install PBO Manager, or set its path in Settings.";
+            SetStatus("pboc.exe not found. Install PBO Manager, or set its path in Settings.", StatusSeverity.Error);
             OpenSettings(Application.Current.MainWindow, isFirstRun: true);
             return;
         }
 
         File.WriteAllText(_project.ConfigPath, ConfigText); // pack what's shown
         var tool = new PboTool(pboc);
-        Status = "Packing...";
+        SetStatus("Packing...");
         var res = await RetexProjectService.PackModAsync(_project, tool);
-        Status = res.Success
-            ? $"Packed mod -> {RetexProjectService.ModFolder(_project)}"
-            : $"Pack failed (exit {res.ExitCode}): {res.StdErr}";
-        if (res.Success) WarnIfMissingTextures(_project);
+        if (res.Success)
+        {
+            SetStatus($"Packed mod -> {RetexProjectService.ModFolder(_project)}");
+            WarnIfMissingTextures(_project);
+        }
+        else
+        {
+            SetStatus($"Pack failed (exit {res.ExitCode}): {res.StdErr}", StatusSeverity.Error);
+        }
     }
+
+    // ---------------------------------------------------------------- window state (persisted)
+
+    /// <summary>Reads back the persisted window geometry (called by the window on load).</summary>
+    public AppSettings Settings => _settings;
 }

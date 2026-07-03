@@ -365,6 +365,17 @@ public static class RetexProjectService
     private static string NormTex(string path) =>
         path.Replace('\\', '/').TrimStart('/').ToLowerInvariant();
 
+    /// <summary>Expands a $PBOPREFIX$ template for a project: replaces "{slug}" with the sanitized
+    /// project name. An empty/whitespace template falls back to the built-in "z\{slug}\addons\main".</summary>
+    public static string ExpandPrefix(string? template, string projectName)
+    {
+        var t = string.IsNullOrWhiteSpace(template) ? @"z\{slug}\addons\main" : template;
+        return t.Replace("{slug}", Slug(projectName));
+    }
+
+    /// <summary>Public form of the internal unique-class-name generator, for the app's rename/duplicate flows.</summary>
+    public static string MakeUniqueClassName(RetexProject proj, string baseName) => UniqueClassName(proj, baseName);
+
     private static string UniqueClassName(RetexProject proj, string baseName)
     {
         var name = Sanitize(baseName);
