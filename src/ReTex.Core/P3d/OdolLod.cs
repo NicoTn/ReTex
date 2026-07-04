@@ -35,6 +35,7 @@ public sealed class OdolLodMesh
     public required float[][] Points { get; init; } // [i] = {x,y,z}
     public required float[][] Normals { get; init; } // [i] = {x,y,z}, same length as Points or empty
     public required float[][] Uv { get; init; } // [i] = {u,v}, same length as Points or empty
+    public float[][] Uv2 { get; init; } = System.Array.Empty<float[]>(); // UV set 1 (detail), when present
     public required List<OdolFace> Faces { get; init; }
     public required List<OdolSection> Sections { get; init; }
     public required List<string> Textures { get; init; } // raw .paa virtual paths

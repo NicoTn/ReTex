@@ -100,13 +100,149 @@ if (args.Length >= 2 && args[0] == "--p3dmesh")
     var d = File.ReadAllBytes(args[1]);
     var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(d);
     if (mesh == null) { Console.WriteLine("could not decode a visual LOD."); return 0; }
-    Console.WriteLine($"points={mesh.Points.Length}, normals={mesh.Normals.Length}, uv={mesh.Uv.Length}, faces={mesh.Faces.Count}, sections={mesh.Sections.Count}");
+    Console.WriteLine($"points={mesh.Points.Length}, normals={mesh.Normals.Length}, uv={mesh.Uv.Length}, uv2={mesh.Uv2.Length}, faces={mesh.Faces.Count}, sections={mesh.Sections.Count}");
+    if (mesh.Uv2.Length == mesh.Uv.Length && mesh.Uv.Length > 0)
+    {
+        int diff = 0; for (int i = 0; i < mesh.Uv.Length; i++) if (Math.Abs(mesh.Uv[i][0]-mesh.Uv2[i][0])>1e-4 || Math.Abs(mesh.Uv[i][1]-mesh.Uv2[i][1])>1e-4) diff++;
+        Console.WriteLine($"  uv vs uv2: {diff}/{mesh.Uv.Length} vertices differ");
+        for (int i = 0; i < mesh.Uv.Length && diff>0; i++) if (Math.Abs(mesh.Uv[i][0]-mesh.Uv2[i][0])>1e-4 || Math.Abs(mesh.Uv[i][1]-mesh.Uv2[i][1])>1e-4) { Console.WriteLine($"    v[{i}] uv=({mesh.Uv[i][0]:f3},{mesh.Uv[i][1]:f3}) uv2=({mesh.Uv2[i][0]:f3},{mesh.Uv2[i][1]:f3})"); if(--diff<=0||i>20000)break; }
+    }
     Console.WriteLine($"textures: {string.Join(" | ", mesh.Textures)}");
     Console.WriteLine($"materials: {string.Join(" | ", mesh.Materials)}");
     foreach (var s in mesh.Sections)
         Console.WriteLine($"  section faces[{s.FaceIndexFrom}..{s.FaceIndexTo}] tex={s.CommonTextureIndex} mat={s.MaterialIndex}");
     for (int i = 0; i < Math.Min(3, mesh.Points.Length); i++)
         Console.WriteLine($"  pt[{i}]=({string.Join(",", mesh.Points[i])}) uv=({(mesh.Uv.Length > i ? string.Join(",", mesh.Uv[i]) : "-")}) n=({(mesh.Normals.Length > i ? string.Join(",", mesh.Normals[i]) : "-")})");
+    return 0;
+}
+
+// Resolve a mod's assets and print ClassName/Model/first-texture for matching classes:
+// Probe --assetinfo <modFolder> <classSubstring>
+if (args.Length >= 3 && args[0] == "--assetinfo")
+{
+    var m = new ReTex.Core.Mods.ArmaMod { Name = Path.GetFileName(args[1]), Path = args[1], DisplayName = Path.GetFileName(args[1]) };
+    var ad = Path.Combine(args[1], "addons");
+    if (Directory.Exists(ad)) m.PboPaths.AddRange(Directory.GetFiles(ad, "*.pbo"));
+    var all = ReTex.Core.Assets.AssetService.LoadForMod(m);
+    foreach (var a in all.Where(x => x.ClassName.Contains(args[2], StringComparison.OrdinalIgnoreCase)))
+        Console.WriteLine($"  {a.ClassName}  [{a.Category}]  model='{a.Model}'  tex0='{(a.HiddenSelectionsTextures.Count > 0 ? a.HiddenSelectionsTextures[0] : "-")}'");
+    return 0;
+}
+
+// Dump named selections + which faces/textures they cover, and simulate a name-based retexture.
+// Probe --p3dsel <pboOrP3d> [virtualPath] [selNameToRetex]
+if (args.Length >= 2 && args[0] == "--p3dsel")
+{
+    byte[] d;
+    if (args[1].EndsWith(".pbo", StringComparison.OrdinalIgnoreCase))
+    {
+        if (args.Length < 3) { Console.WriteLine("need a virtual path for a pbo"); return 1; }
+        var ex = ReTex.Core.Pbo.VirtualFileService.Extract(new[] { args[1] }, args[2]);
+        if (ex == null) { Console.WriteLine($"could not extract {args[2]} from pbo"); return 1; }
+        d = ex;
+    }
+    else d = File.ReadAllBytes(args[1]);
+
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(d);
+    if (mesh == null) { Console.WriteLine("could not decode a visual LOD."); return 0; }
+    Console.WriteLine($"faces={mesh.Faces.Count}, textures=[{string.Join(" | ", mesh.Textures)}]");
+    Console.WriteLine($"named selections ({mesh.NamedSelections.Count}):");
+    foreach (var ns in mesh.NamedSelections)
+    {
+        int cnt = ns.FaceMembership.Count(b => b != 0);
+        // which texture indices do this selection's faces use?
+        var texs = new SortedSet<int>();
+        bool haveFt = mesh.FaceTextureIndex.Count == mesh.Faces.Count;
+        for (int fi = 0; fi < ns.FaceMembership.Length; fi++)
+            if (ns.FaceMembership[fi] != 0 && haveFt) texs.Add(mesh.FaceTextureIndex[fi]);
+        var texNames = texs.Select(t => t >= 0 && t < mesh.Textures.Count ? mesh.Textures[t] : "(none)");
+        // Centroid of this selection's member faces (world space) - reveals which side each side-named
+        // selection sits on (e.g. is "leftleg" at +X or -X), for detecting a mirror in the preview.
+        double cx = 0, cy = 0, cz = 0; int vc = 0;
+        for (int fi = 0; fi < ns.FaceMembership.Length && fi < mesh.Faces.Count; fi++)
+            if (ns.FaceMembership[fi] != 0)
+                foreach (var vi in mesh.Faces[fi].VertexTableIndex)
+                    if (vi >= 0 && vi < mesh.Points.Length) { cx += mesh.Points[vi][0]; cy += mesh.Points[vi][1]; cz += mesh.Points[vi][2]; vc++; }
+        string cen = vc > 0 ? $"centroid=({cx / vc:f2},{cy / vc:f2},{cz / vc:f2})" : "";
+        Console.WriteLine($"  '{ns.Name}': {cnt} faces {cen} -> textures: {string.Join(", ", texNames)}");
+    }
+    string? selName = args.Length >= 4 ? args[3] : (args.Length >= 3 && !args[1].EndsWith(".pbo", StringComparison.OrdinalIgnoreCase) ? args[2] : null);
+    if (selName != null)
+    {
+        var sels = new List<ReTex.Core.Projects.RetexSelection> {
+            new() { Name = selName, SourceTexture = "", ProjectTexture = "textures\\NEW_co.paa" } };
+        var groups = ReTex.Core.P3d.OdolMeshPreview.BuildGroups(mesh, sels, @"C:\proj\addons\main");
+        Console.WriteLine($"\nSimulated retexture of selection '{selName}':");
+        foreach (var g in groups)
+            Console.WriteLine($"  {g.FaceIndices.Count} faces retex={g.Texture.IsRetextured} proj='{g.Texture.ProjectFilePath}' src='{g.Texture.SourceVirtualPath}'");
+    }
+    return 0;
+}
+
+// Enumerate every LOD anchor FindLodMinPos finds across the whole file, decoding each and reporting
+// its offset, point/face counts, UVScale (degenerate vs real), and first texture: Probe --p3dlods <file>
+if (args.Length >= 2 && args[0] == "--p3dlods")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var hdr = ReTex.Core.P3d.OdolReader.ReadHeader(d);
+    var mi = ReTex.Core.P3d.OdolReader.ReadModelInfo(d, hdr.HeaderEndOffset, hdr.Version);
+    Console.WriteLine($"ODOL v{hdr.Version}, {hdr.LodCount} LODs, resolutions=[{string.Join(", ", hdr.Resolutions.Select(r => r.ToString("g4")))}]");
+    int from = mi.EndOffset, idx = 0;
+    for (int guard = 0; guard < 64; guard++)
+    {
+        int mp = ReTex.Core.P3d.OdolLodReader.FindLodMinPos(d, from, d.Length, mi.BBoxMin, mi.BBoxMax);
+        if (mp < 0) break;
+        try
+        {
+            var m = ReTex.Core.P3d.OdolLodReader.ReadFromMinPos(d, mp, hdr.Version);
+            int lodEnd = m.VertexTableStartOffset > 0 ? m.VertexTableStartOffset - 4 + m.SizeOfVertexTable : mp;
+            string uvs = m.UvScale is { Length: 4 } u ? $"[{u[0]:g3},{u[1]:g3},{u[2]:g3},{u[3]:g3}]" : "(none)";
+            float span = m.UvScale is { Length: 4 } uu ? Math.Max(Math.Abs(uu[2]), Math.Abs(uu[3])) : 0;
+            Console.WriteLine($"  anchor[{idx}] @{mp}: pts={m.Points?.Length ?? -1} faces={m.FaceCount} mats={m.Materials.Count} tex={m.Textures.Count} UVScale={uvs} {(span > 0.01f ? "VALID-UV" : "degenerate")} err={m.VertexTableError ?? "none"}  firstTex={(m.Textures.Count > 0 ? m.Textures[0] : "-")}");
+            from = Math.Max(lodEnd, mp) + 1;
+        }
+        catch (Exception ex) { Console.WriteLine($"  anchor[{idx}] @{mp}: THREW {ex.Message}"); from = mp + 1; }
+        idx++;
+    }
+    Console.WriteLine($"total anchors: {idx}");
+    return 0;
+}
+
+// Find "spike" faces (huge edges) that show as stray triangles, and which section/texture they're in:
+// Probe --p3doutliers <file>
+if (args.Length >= 2 && args[0] == "--p3doutliers")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(d);
+    if (mesh == null) { Console.WriteLine("could not decode."); return 0; }
+    var pts = mesh.Points;
+    float minx = float.MaxValue, miny = float.MaxValue, minz = float.MaxValue, maxx = -float.MaxValue, maxy = -float.MaxValue, maxz = -float.MaxValue;
+    foreach (var p in pts) { minx = Math.Min(minx, p[0]); maxx = Math.Max(maxx, p[0]); miny = Math.Min(miny, p[1]); maxy = Math.Max(maxy, p[1]); minz = Math.Min(minz, p[2]); maxz = Math.Max(maxz, p[2]); }
+    Console.WriteLine($"point bbox: [{minx:g3},{miny:g3},{minz:g3}]..[{maxx:g3},{maxy:g3},{maxz:g3}]  ({pts.Length} pts, {mesh.Faces.Count} faces)");
+    float diag = (float)Math.Sqrt((maxx-minx)*(maxx-minx)+(maxy-miny)*(maxy-miny)+(maxz-minz)*(maxz-minz));
+    // Per-face longest edge; flag faces whose longest edge is a big fraction of the model diagonal.
+    var edges = new List<float>();
+    float Edge(float[] a, float[] b) => (float)Math.Sqrt((a[0]-b[0])*(a[0]-b[0])+(a[1]-b[1])*(a[1]-b[1])+(a[2]-b[2])*(a[2]-b[2]));
+    int spikes = 0; int shown = 0;
+    for (int fi = 0; fi < mesh.Faces.Count; fi++)
+    {
+        var f = mesh.Faces[fi];
+        float maxEdge = 0;
+        for (int i = 0; i < f.VertexTableIndex.Length; i++)
+        {
+            int a = f.VertexTableIndex[i], b = f.VertexTableIndex[(i + 1) % f.VertexTableIndex.Length];
+            if (a < pts.Length && b < pts.Length) maxEdge = Math.Max(maxEdge, Edge(pts[a], pts[b]));
+        }
+        edges.Add(maxEdge);
+        if (maxEdge > diag * 0.25f)
+        {
+            spikes++;
+            int tex = fi < mesh.FaceTextureIndex.Count ? mesh.FaceTextureIndex[fi] : -99;
+            if (shown++ < 15) Console.WriteLine($"  spike face {fi}: maxEdge={maxEdge:g3} (diag={diag:g3}) texIdx={tex} verts=[{string.Join(",", f.VertexTableIndex)}]");
+        }
+    }
+    edges.Sort();
+    Console.WriteLine($"median edge={edges[edges.Count/2]:g3}, spikes(>0.25*diag)={spikes}");
     return 0;
 }
 

@@ -27,3 +27,11 @@ public sealed class NonEmptyToBoolConverter : IValueConverter
         => value is string s && s.Length > 0;
     public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
 }
+
+/// <summary>Visible when the bound string is non-empty, Collapsed otherwise (the 3D hover overlay).</summary>
+public sealed class NonEmptyToVisibilityConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        => value is string s && s.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture) => throw new NotSupportedException();
+}

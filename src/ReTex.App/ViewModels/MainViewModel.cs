@@ -13,6 +13,7 @@ using ReTex.Core.P3d;
 using ReTex.Core.Paa;
 using ReTex.Core.Pbo;
 using ReTex.Core.Projects;
+using ReTex.Core.Rap;
 using ReTex.Core.Tools;
 
 namespace ReTex.App.ViewModels;
@@ -40,8 +41,18 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private AssetInfo? _selectedAsset;
     [ObservableProperty] private BitmapSource? _previewImage;
     [ObservableProperty] private string _previewInfo = "";
+    /// <summary>"2 / 3" when the current context has multiple previewable textures; "" for 0/1 (drives
+    /// the prev/next arrow visibility). See <see cref="ShowPreviewSlot"/>.</summary>
+    [ObservableProperty] private string _previewCounter = "";
     [ObservableProperty] private Model3DGroup? _previewModel3D;
     [ObservableProperty] private string _previewModelInfo = "";
+    /// <summary>Texture path of the model part currently under the cursor (3D hover-to-identify).</summary>
+    [ObservableProperty] private string _hoverTexture = "";
+    /// <summary>Multi-line breakdown of every texture group + rvmat the model uses (info tooltip).</summary>
+    [ObservableProperty] private string _previewGroupsSummary = "";
+    /// <summary>Maps each rendered 3D part to a human label (texture + rvmat) for the hover hit-test.
+    /// Set by <see cref="LoadPreviewModel"/>; read by the window's MouseMove handler.</summary>
+    public IReadOnlyDictionary<GeometryModel3D, string>? PreviewPartLabels { get; private set; }
     [ObservableProperty] private string _assetSearch = "";
     public ObservableCollection<SelectionChoice> AssetSelections { get; } = new();
     [ObservableProperty] private string _categoryFilter = "All";
@@ -246,30 +257,74 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
+    // The set of textures the 2D preview can cycle through for the current selection (an asset's
+    // hidden-selection textures, or a project entry's per-selection textures) + the current index.
+    private enum PreviewKind { SourceVirtual, ProjectFile }
+    private sealed record PreviewSlot(string Label, PreviewKind Kind, string Path);
+    private List<PreviewSlot> _previewSlots = new();
+    private int _previewIndex;
+
     [RelayCommand]
-    private async Task LoadPreview()
+    private void LoadPreview()
     {
-        PreviewImage = null;
-        PreviewInfo = "";
         var asset = SelectedAsset;
-        var mod = SelectedMod;
-        if (asset is null || mod is null) return;
+        if (asset is null) { _previewSlots = new(); _ = ShowPreviewSlot(0); return; }
+        // One slot per hidden-selection texture; label it with the selection name when known.
+        var slots = new List<PreviewSlot>();
+        for (int i = 0; i < asset.HiddenSelectionsTextures.Count; i++)
+        {
+            var t = asset.HiddenSelectionsTextures[i];
+            if (t.Length == 0) continue;
+            string label = i < asset.HiddenSelections.Count && asset.HiddenSelections[i].Length > 0
+                ? asset.HiddenSelections[i] : Path.GetFileName(t.Replace('\\', '/'));
+            slots.Add(new PreviewSlot(label, PreviewKind.SourceVirtual, t));
+        }
+        _previewSlots = slots;
+        _ = ShowPreviewSlot(0);
+    }
 
-        var tex = asset.HiddenSelectionsTextures.FirstOrDefault(t => t.Length > 0);
-        if (tex is null) { PreviewInfo = "(no texture)"; return; }
+    [RelayCommand]
+    private void PreviewPrev() => _ = ShowPreviewSlot(_previewIndex - 1);
 
+    [RelayCommand]
+    private void PreviewNext() => _ = ShowPreviewSlot(_previewIndex + 1);
+
+    /// <summary>Shows the Nth previewable texture for the current selection (wrapping), loading its
+    /// pixels off the UI thread. Source textures are extracted from the scanned mods; project textures
+    /// are read from disk. Updates <see cref="PreviewCounter"/> so the arrows appear only when >1.</summary>
+    private async Task ShowPreviewSlot(int index)
+    {
+        if (_previewSlots.Count == 0)
+        {
+            _previewIndex = 0;
+            PreviewImage = null;
+            PreviewInfo = SelectedAsset is not null || SelectedEntry is not null ? "(no texture)" : "";
+            PreviewCounter = "";
+            return;
+        }
+        int n = _previewSlots.Count;
+        index = ((index % n) + n) % n;
+        _previewIndex = index;
+        PreviewCounter = n > 1 ? $"{index + 1} / {n}" : "";
+        var slot = _previewSlots[index];
+
+        var allPbos = Mods.SelectMany(m => m.PboPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var selPbos = SelectedMod?.PboPaths.ToList() ?? new List<string>();
         try
         {
             var img = await Task.Run(() =>
             {
-                var bytes = VirtualFileService.Extract(mod.PboPaths, tex);
+                if (slot.Kind == PreviewKind.ProjectFile)
+                    return File.Exists(slot.Path) ? PaaImage.LoadFile(slot.Path) : null;
+                var bytes = ExtractAcrossMods(allPbos, selPbos, slot.Path);
                 return bytes is null ? null : PaaImage.Load(bytes);
             });
-            if (img is null) { PreviewInfo = "(texture not found)"; return; }
+            if (img is null) { PreviewImage = null; PreviewInfo = $"({slot.Label}: texture not found)"; return; }
             PreviewImage = ImageHelper.ToBitmap(img);
-            PreviewInfo = $"{Path.GetFileName(tex.Replace('\\', '/'))}  {img.Width}x{img.Height}";
+            string tag = slot.Kind == PreviewKind.ProjectFile ? "project" : "source";
+            PreviewInfo = $"{slot.Label}  {img.Width}x{img.Height}  ({tag})";
         }
-        catch (Exception ex) { PreviewInfo = $"(preview failed: {ex.Message})"; }
+        catch (Exception ex) { PreviewImage = null; PreviewInfo = $"(preview failed: {ex.Message})"; }
     }
 
     private void ApplyAssetFilter()
@@ -400,8 +455,14 @@ public partial class MainViewModel : ObservableObject
             ProjectName = proj.Name;
             ProjectsRoot = Path.GetDirectoryName(proj.ProjectDir) ?? ProjectsRoot;
             SetProject(proj);
-            RefreshEntries();
             ConfigText = File.Exists(proj.ConfigPath) ? File.ReadAllText(proj.ConfigPath) : "";
+            // Sync the model to the config.cpp on disk BEFORE listing entries, so hand-edited
+            // displayNames (and copied class values) show correctly and aren't silently reverted by
+            // the next regenerate. Without this, the model holds the stale retex.json names while
+            // config.cpp holds the edits, and generation clobbers the edits. Best-effort (see
+            // RetexProjectService.PreserveManualEdits).
+            PreserveManualEdits();
+            RefreshEntries();
             SetStatus($"Opened {proj.Name} ({proj.Entries.Count} retextures)");
             WarnIfMissingTextures(proj);
         }
@@ -424,10 +485,58 @@ public partial class MainViewModel : ObservableObject
     {
         RenameText = value?.NewClassName ?? "";
         RebuildEntryForm(value);
-        if (_project is null || value is null) return;
-        var rel = value.Selections.FirstOrDefault(s => s.ProjectTexture.Length > 0)?.ProjectTexture;
-        if (rel is not null) _ = LoadProjectPreview(Path.Combine(_project.AddonDir, rel));
-        _ = LoadPreviewModel(value.SourceModel, value.Selections); // project flow: retexture applied
+        if (_project is null || value is null) { _previewSlots = new(); _ = ShowPreviewSlot(0); return; }
+        // One previewable slot per selection: the retextured project .paa when present, else the source
+        // texture. The prev/next arrows then cycle through every selection of this retexture.
+        var slots = new List<PreviewSlot>();
+        foreach (var s in value.Selections.OrderBy(s => s.Index))
+        {
+            if (s.ProjectTexture.Length > 0)
+                slots.Add(new PreviewSlot(s.Name.Length > 0 ? s.Name : s.ProjectTexture,
+                    PreviewKind.ProjectFile, Path.Combine(_project.AddonDir, s.ProjectTexture)));
+            else if (s.SourceTexture.Length > 0)
+                slots.Add(new PreviewSlot(s.Name.Length > 0 ? s.Name : Path.GetFileName(s.SourceTexture.Replace('\\', '/')),
+                    PreviewKind.SourceVirtual, s.SourceTexture));
+        }
+        _previewSlots = slots;
+        _ = ShowPreviewSlot(0);
+        _ = LoadPreviewModel(PreviewModelFor(value), value.Selections); // project flow: retexture applied
+    }
+
+    /// <summary>Picks the model to preview a retexture against. A uniform is a pair (a CfgWeapons item
+    /// + its worn CfgVehicles unit); the item's own model is a ground/inventory model (e.g. Grav_U.p3d)
+    /// whose UV layout differs from the worn body (e.g. Grav_U_Inceptor.p3d), so previewing the
+    /// retexture on it maps the texture onto the wrong mesh and looks scrambled. Among the pair's two
+    /// models, choose the one whose file name best matches the retexture's source texture (the worn
+    /// body's baked texture shares its stem, e.g. Grav_U_Inceptor.p3d ← Grav_U_Inceptor_UM_co.paa).
+    /// This corrects both new projects and older ones whose stored models predate the fix.</summary>
+    private string PreviewModelFor(RetexEntry entry)
+    {
+        var candidates = new List<string>();
+        if (entry.SourceModel.Length > 0) candidates.Add(entry.SourceModel);
+        if ((entry.IsUniform || entry.IsUniformUnit) && entry.PartnerClass.Length > 0 && _project is not null)
+        {
+            var partner = _project.Entries.FirstOrDefault(e =>
+                e.NewClassName.Equals(entry.PartnerClass, StringComparison.OrdinalIgnoreCase));
+            if (partner is not null && partner.SourceModel.Length > 0) candidates.Add(partner.SourceModel);
+        }
+        candidates = candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (candidates.Count <= 1) return entry.SourceModel;
+
+        string texStem = Path.GetFileNameWithoutExtension(
+            (entry.Selections.FirstOrDefault(s => s.SourceTexture.Length > 0)?.SourceTexture ?? "")
+                .Replace('\\', '/')).ToLowerInvariant();
+        return candidates
+            .OrderByDescending(m => CommonPrefixLength(Path.GetFileNameWithoutExtension(m).ToLowerInvariant(), texStem))
+            .ThenByDescending(m => m.Length)
+            .First();
+    }
+
+    private static int CommonPrefixLength(string a, string b)
+    {
+        int n = Math.Min(a.Length, b.Length), i = 0;
+        while (i < n && a[i] == b[i]) i++;
+        return i;
     }
 
     // ---------------------------------------------------------------- form editor
@@ -553,6 +662,9 @@ public partial class MainViewModel : ObservableObject
     {
         PreviewModel3D = null;
         PreviewModelInfo = "";
+        HoverTexture = "";
+        PreviewGroupsSummary = "";
+        PreviewPartLabels = null;
         if (string.IsNullOrWhiteSpace(modelVirtualPath)) { PreviewModelInfo = "(no source model for this asset)"; return; }
 
         // Snapshot PBO paths on the UI thread (Mods is an ObservableCollection - not thread-safe).
@@ -562,21 +674,76 @@ public partial class MainViewModel : ObservableObject
         string? addonDir = _project?.AddonDir;
         try
         {
-            var (model, info) = await Task.Run(() =>
+            var (model, info, labels, summary) = await Task.Run(() =>
             {
                 var bytes = ExtractAcrossMods(allPbos, selPbos, modelVirtualPath!);
-                if (bytes is null) return ((Model3DGroup?)null, "(source model not found — is its mod installed and scanned?)");
+                if (bytes is null) return ((Model3DGroup?)null, "(source model not found — is its mod installed and scanned?)", (IReadOnlyDictionary<GeometryModel3D, string>?)null, "");
                 var mesh = OdolLodReader.ReadAnyVisualLod(bytes);
-                if (mesh is null) return (null, "(3D preview not available for this model format — see the texture tab)");
+                if (mesh is null) return (null, "(3D preview unavailable for this model — its .p3d format/UV layout isn't fully supported yet; use the Texture tab)", null, "");
                 var groups = OdolMeshPreview.BuildGroups(mesh, selections, addonDir);
-                var m3d = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, allPbos, selPbos));
+                var built = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, allPbos, selPbos));
                 string name = Path.GetFileName(modelVirtualPath!.Replace('\\', '/'));
-                return (m3d, $"{name}  {mesh.Points.Length} verts · {mesh.Faces.Count} faces · {groups.Count} texture group(s)");
+                var infoStr = $"{name}  {mesh.Points.Length} verts · {mesh.Faces.Count} faces · {groups.Count} texture group(s)  ⓘ hover a part";
+
+                // Per-part hover labels + a full groups/materials breakdown for the info tooltip.
+                var lbl = built is null ? null : built.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, mesh));
+                var sum = DescribeModel(mesh, groups);
+                return (built?.Model, infoStr, (IReadOnlyDictionary<GeometryModel3D, string>?)lbl, sum);
             });
             PreviewModel3D = model;
             PreviewModelInfo = info;
+            PreviewPartLabels = labels;
+            PreviewGroupsSummary = summary;
         }
         catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
+    }
+
+    /// <summary>One-line label for a hovered model part: its texture (retextured or source) plus the
+    /// rvmat material that applies it, when the model uses one.</summary>
+    private static string DescribePart(PreviewTexture tex, OdolLodMesh mesh)
+    {
+        string line = tex.SourceVirtualPath.Length > 0 ? tex.SourceVirtualPath : "(no texture)";
+        if (tex.IsRetextured) line += "  (retextured)";
+        var mat = MaterialForTexture(mesh, tex.SourceVirtualPath);
+        return mat.Length > 0 ? $"{line}\nvia material: {mat}" : line;
+    }
+
+    /// <summary>Multi-line breakdown of every texture group + every rvmat the model references.</summary>
+    private static string DescribeModel(OdolLodMesh mesh, IReadOnlyList<OdolPreviewGroup> groups)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("Textures on this model:");
+        foreach (var g in groups)
+        {
+            var t = g.Texture;
+            string label = t.IsRetextured ? $"{t.SourceVirtualPath}  (retextured)"
+                          : t.SourceVirtualPath.Length > 0 ? t.SourceVirtualPath : "(untextured)";
+            var mat = MaterialForTexture(mesh, t.SourceVirtualPath);
+            sb.AppendLine(mat.Length > 0 ? $"  • {label}   [material: {mat}]" : $"  • {label}");
+        }
+        var mats = mesh.Materials.Where(m => m.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (mats.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("Materials (rvmat) used:");
+            foreach (var m in mats) sb.AppendLine($"  • {m}");
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Best-effort: finds the rvmat of the section whose base texture matches the given path
+    /// (so the hover can say a part's texture is applied via that material). "" if none/unknown.</summary>
+    private static string MaterialForTexture(OdolLodMesh mesh, string texturePath)
+    {
+        if (texturePath.Length == 0) return "";
+        string norm = texturePath.Replace('/', '\\').TrimStart('\\').ToLowerInvariant();
+        foreach (var s in mesh.Sections)
+        {
+            string t = s.CommonTextureIndex >= 0 && s.CommonTextureIndex < mesh.Textures.Count ? mesh.Textures[s.CommonTextureIndex] : "";
+            if (t.Replace('/', '\\').TrimStart('\\').ToLowerInvariant() != norm) continue;
+            if (s.MaterialIndex >= 0 && s.MaterialIndex < mesh.Materials.Count) return mesh.Materials[s.MaterialIndex];
+        }
+        return "";
     }
 
     /// <summary>Extracts a virtual path from the scanned mods, preferring the PBOs most likely to
@@ -615,17 +782,6 @@ public partial class MainViewModel : ObservableObject
         return null;
     }
 
-    private async Task LoadProjectPreview(string path)
-    {
-        try
-        {
-            var img = await Task.Run(() => File.Exists(path) ? PaaImage.LoadFile(path) : null);
-            if (img is null) return;
-            PreviewImage = ImageHelper.ToBitmap(img);
-            PreviewInfo = $"{Path.GetFileName(path)}  {img.Width}x{img.Height}  (project)";
-        }
-        catch (Exception ex) { PreviewInfo = $"(preview failed: {ex.Message})"; }
-    }
 
     /// <summary>Extracts the current context's SOURCE texture(s) to temp .paa files and opens them in
     /// the default image editor — for referencing the originals or grabbing parts of them while
@@ -666,6 +822,47 @@ public partial class MainViewModel : ObservableObject
             ? $"Opened {opened} source texture(s) in your editor (temp copies in {dir})."
             : "Couldn't extract the source texture(s) — is the source mod scanned?",
             opened > 0 ? StatusSeverity.Info : StatusSeverity.Warn);
+    }
+
+    /// <summary>De-rapifies the selected asset's source mod config (config.bin) to readable text and
+    /// opens it in the default editor as a read-only reference (temp copy). Runs off the UI thread
+    /// since some mod configs are large. Falls back to a text config.cpp if the mod ships one.</summary>
+    [RelayCommand]
+    private async Task OpenSourceConfig()
+    {
+        var pbo = SelectedAsset?.SourcePbo;
+        if (string.IsNullOrEmpty(pbo) || !File.Exists(pbo))
+        {
+            SetStatus("Select an asset first — its source PBO holds the original config.", StatusSeverity.Warn);
+            return;
+        }
+        SetStatus("Reading source config…");
+        try
+        {
+            var (outPath, reason) = await Task.Run<(string?, string)>(() =>
+            {
+                // config.bin (rapified) is the norm; a few mods ship a text config.cpp instead.
+                var bytes = VirtualFileService.Extract(new[] { pbo }, "config.bin")
+                         ?? VirtualFileService.Extract(new[] { pbo }, "config.cpp");
+                if (bytes is null) return (null, "not found (or compressed — would need pboc)");
+
+                string text = RapReader.IsRapified(bytes)
+                    ? $"// De-rapified from {Path.GetFileName(pbo)} by ReTex — read-only reference.\r\n\r\n"
+                      + RapWriter.WriteBody(RapReader.Parse(bytes), indent: 0)
+                    : System.Text.Encoding.UTF8.GetString(bytes);
+
+                var dir = Path.Combine(Path.GetTempPath(), "ReTex", "source");
+                Directory.CreateDirectory(dir);
+                var op = Path.Combine(dir, Path.GetFileNameWithoutExtension(pbo) + ".config.cpp");
+                File.WriteAllText(op, text);
+                return (op, "");
+            });
+
+            if (outPath is null) { SetStatus($"Couldn't read the source config — {reason}.", StatusSeverity.Warn); return; }
+            Process.Start(new ProcessStartInfo(outPath) { UseShellExecute = true });
+            SetStatus($"Opened original config from {Path.GetFileName(pbo)} (read-only temp copy).");
+        }
+        catch (Exception ex) { SetStatus($"Couldn't open source config: {ex.Message}", StatusSeverity.Error); }
     }
 
     /// <summary>Re-runs the preview for whatever is currently selected. Used by the Refresh button
@@ -893,7 +1090,12 @@ public partial class MainViewModel : ObservableObject
     private void SaveConfig()
     {
         if (_project is null) { SetStatus("No project yet.", StatusSeverity.Warn); return; }
+        // Fold recognized text edits (displayName, copied class values) into the model + retex.json
+        // BEFORE writing, so the saved config and the project model stay in sync. Otherwise the model
+        // keeps the old names and a later regenerate reverts what was just saved.
+        PreserveManualEdits();
         File.WriteAllText(_project.ConfigPath, ConfigText);
+        RefreshEntries(); // reflect any folded name changes in the entry list
         SetStatus("Saved config.cpp");
     }
 

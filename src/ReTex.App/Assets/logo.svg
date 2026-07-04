@@ -1,0 +1,24 @@
+<svg width="680" height="260" viewBox="0 0 680 260" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>ReTex application logo</title>
+<desc>Dark navy plate with a split-hexagon material-sample icon (hatched raw texture, solid accent texture, bright retexture seam) beside the ReTex wordmark and subtitle Arma 3 retexture studio.</desc>
+<defs>
+<clipPath id="hexclip"><path d="M187 120 L157 68 L97 68 L67 120 L97 172 L157 172 Z"/></clipPath>
+<pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+<rect width="8" height="8" fill="#33486E"/>
+<line x1="0" y1="0" x2="0" y2="8" stroke="#48618C" stroke-width="2"/>
+</pattern>
+</defs>
+<rect x="20" y="20" width="640" height="220" rx="26" fill="#141D30" stroke="#28395A" stroke-width="1.5"/>
+<g clip-path="url(#hexclip)">
+<rect x="52" y="45" width="75" height="150" fill="url(#hatch)"/>
+<rect x="127" y="45" width="75" height="150" fill="#57B87E"/>
+<circle cx="170" cy="95" r="26" fill="#6ED098" opacity="0.35"/>
+<circle cx="150" cy="150" r="20" fill="#3FA268" opacity="0.4"/>
+</g>
+<path d="M187 120 L157 68 L97 68 L67 120 L97 172 L157 172 Z" fill="none" stroke="#1B2740" stroke-width="3"/>
+<line x1="127" y1="66" x2="127" y2="174" stroke="#B7F2D0" stroke-width="3.5" stroke-linecap="round"/>
+<circle cx="127" cy="181" r="6.5" fill="#B7F2D0"/>
+<path d="M127 187 Q124 199 127 205 Q130 199 127 187 Z" fill="#B7F2D0"/>
+<text x="248" y="128" font-family="'Segoe UI',system-ui,sans-serif" font-size="70" font-weight="600" letter-spacing="-1"><tspan fill="#E7ECF4">Re</tspan><tspan fill="#57B87E">Tex</tspan></text>
+<text x="252" y="163" font-family="'Segoe UI',system-ui,sans-serif" font-size="19" font-weight="400" letter-spacing="3.5" fill="#8595AD">ARMA 3 RETEXTURE STUDIO</text>
+</svg>

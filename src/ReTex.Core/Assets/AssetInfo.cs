@@ -25,6 +25,10 @@ public sealed class AssetInfo
     public IReadOnlyList<string> HiddenSelections { get; init; } = Array.Empty<string>();
     public IReadOnlyList<string> HiddenSelectionsTextures { get; init; } = Array.Empty<string>();
 
+    /// <summary>Per-selection .rvmat material overrides (hiddenSelectionsMaterials[]). Empty when the
+    /// asset doesn't expose material swaps. Parallel to <see cref="HiddenSelections"/> by index.</summary>
+    public IReadOnlyList<string> HiddenSelectionsMaterials { get; init; } = Array.Empty<string>();
+
     /// <summary>The mod PBO this asset came from (filled in by the caller).</summary>
     public string SourcePbo { get; set; } = "";
 

@@ -43,6 +43,10 @@ public static class AssetExtractor
         {
             var hs = ResolveArray(c, index, "hiddenSelections");
             var hst = ResolveArray(c, index, "hiddenSelectionsTextures");
+            // Keep empty slots for materials: only some selections carry an rvmat, so the array is
+            // sparse (e.g. {"", "arms.rvmat"}). Dropping the empties would shift each material onto
+            // the wrong selection index. Textures rarely have interior gaps, so they stay filtered.
+            var hsm = ResolveArray(c, index, "hiddenSelectionsMaterials", keepEmpty: true);
             if (hs.Count == 0 && hst.Count == 0) continue;
 
             var scope = ResolveInt(c, index, "scope", 2);
@@ -58,6 +62,7 @@ public static class AssetExtractor
                 Scope = scope,
                 HiddenSelections = hs,
                 HiddenSelectionsTextures = hst,
+                HiddenSelectionsMaterials = hsm,
                 SourceClassNode = c,
             });
         }
@@ -70,7 +75,10 @@ public static class AssetExtractor
     private static RapClass? Parent(RapClass c, Dictionary<string, RapClass> index) =>
         c.Parent.Length > 0 && index.TryGetValue(c.Parent, out var p) && p != c ? p : null;
 
-    private static List<string> ResolveArray(RapClass c, Dictionary<string, RapClass> index, string key)
+    /// <param name="keepEmpty">When true, the full array (including empty-string slots) is returned as
+    /// long as it has at least one non-empty entry - needed to keep sparse arrays like
+    /// hiddenSelectionsMaterials index-aligned with hiddenSelections.</param>
+    private static List<string> ResolveArray(RapClass c, Dictionary<string, RapClass> index, string key, bool keepEmpty = false)
     {
         int guard = 256;
         for (var cur = c; cur is not null && guard-- > 0; cur = Parent(cur, index))
@@ -78,8 +86,9 @@ public static class AssetExtractor
             var v = cur.Value(key);
             if (v is { IsArray: true })
             {
-                var list = v.AsStringList().Where(s => s.Length > 0).ToList();
-                if (list.Count > 0) return list;
+                var all = v.AsStringList().ToList();
+                var nonEmpty = all.Where(s => s.Length > 0).ToList();
+                if (nonEmpty.Count > 0) return keepEmpty ? all : nonEmpty;
             }
         }
         return new();

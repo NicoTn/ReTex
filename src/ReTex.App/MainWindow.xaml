@@ -6,6 +6,7 @@
         xmlns:avalonedit="http://icsharpcode.net/sharpdevelop/avalonedit"
         xmlns:h="http://helix-toolkit.org/wpf"
         Title="ReTex - Arma 3 Retexture Studio"
+        Icon="app.ico"
         Height="840" Width="1400" MinHeight="640" MinWidth="1080"
         WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True"
@@ -178,7 +179,13 @@
                     <!-- Asset detail -->
                     <Border Grid.Row="0" BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,0,1" Padding="0,0,0,8" Margin="0,0,0,8">
                         <StackPanel DataContext="{Binding SelectedAsset}">
-                            <TextBlock Text="{Binding Label}" FontWeight="Bold" FontSize="14" TextWrapping="Wrap"/>
+                            <DockPanel>
+                                <Button DockPanel.Dock="Right" Content="View source config.cpp" Padding="8,3" VerticalAlignment="Top"
+                                        IsEnabled="{Binding Converter={StaticResource NotNullToBool}}"
+                                        Command="{Binding DataContext.OpenSourceConfigCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        ToolTip="De-rapify the source mod's config.bin and open it as a read-only reference"/>
+                                <TextBlock Text="{Binding Label}" FontWeight="Bold" FontSize="14" TextWrapping="Wrap"/>
+                            </DockPanel>
                             <TextBlock Text="{Binding Model}" Foreground="{StaticResource Fg.Muted}" FontSize="11" TextTrimming="CharacterEllipsis"/>
                             <TextBlock Text="Selections to retexture:" Margin="0,6,0,0" FontWeight="SemiBold"/>
                             <ItemsControl ItemsSource="{Binding DataContext.AssetSelections, RelativeSource={RelativeSource AncestorType=Window}}">
@@ -201,10 +208,41 @@
                                 BorderBrush="{StaticResource Border.Muted}" BorderThickness="1">
                         <TabItem Header="Texture">
                             <Grid Background="{StaticResource Bg.Panel}">
-                                <Image Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
-                                       RenderOptions.BitmapScalingMode="HighQuality"/>
+                                <!-- Zoom/pan viewport: mouse-wheel zooms about the cursor, left-drag pans,
+                                     double-click resets. Clipped so a zoomed texture stays inside the panel. -->
+                                <Border x:Name="TexturePreviewViewport" ClipToBounds="True" Background="Transparent"
+                                        MouseWheel="TexturePreview_MouseWheel"
+                                        MouseLeftButtonDown="TexturePreview_MouseLeftButtonDown"
+                                        MouseLeftButtonUp="TexturePreview_MouseLeftButtonUp"
+                                        MouseMove="TexturePreview_MouseMove"
+                                        MouseRightButtonDown="TexturePreview_Reset"
+                                        Cursor="SizeAll">
+                                    <Image x:Name="TexturePreviewImage" Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
+                                           RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0,0">
+                                        <Image.RenderTransform>
+                                            <TransformGroup>
+                                                <ScaleTransform x:Name="TextureScale"/>
+                                                <TranslateTransform x:Name="TextureTranslate"/>
+                                            </TransformGroup>
+                                        </Image.RenderTransform>
+                                    </Image>
+                                </Border>
                                 <TextBlock Text="{Binding PreviewInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
+                                           IsHitTestVisible="False"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
+
+                                <!-- Prev / next through the asset's (or retexture's) multiple selection textures -->
+                                <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,6"
+                                            Visibility="{Binding PreviewCounter, Converter={StaticResource NonEmptyToVisibility}}">
+                                    <Button Content="◀" Width="26" Padding="0,1" Command="{Binding PreviewPrevCommand}"
+                                            ToolTip="Previous selection texture"/>
+                                    <Border Background="#D0111827" CornerRadius="3" Padding="8,2" Margin="6,0">
+                                        <TextBlock Text="{Binding PreviewCounter}" Foreground="{StaticResource Fg.Primary}" FontSize="11" VerticalAlignment="Center"/>
+                                    </Border>
+                                    <Button Content="▶" Width="26" Padding="0,1" Command="{Binding PreviewNextCommand}"
+                                            ToolTip="Next selection texture"/>
+                                </StackPanel>
+
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
                                     <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
                                             ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
@@ -222,7 +260,14 @@
                                 </h:HelixViewport3D>
                                 <TextBlock Text="{Binding PreviewModelInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"
-                                           IsHitTestVisible="False"/>
+                                           ToolTip="{Binding PreviewGroupsSummary}"/>
+                                <!-- Hover-to-identify: which texture the part under the cursor uses -->
+                                <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="6" Padding="7,4" CornerRadius="3"
+                                        Background="#D0111827" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1"
+                                        IsHitTestVisible="False" MaxWidth="520"
+                                        Visibility="{Binding HoverTexture, Converter={StaticResource NonEmptyToVisibility}}">
+                                    <TextBlock Text="{Binding HoverTexture}" Foreground="{StaticResource Fg.Primary}" FontSize="11" TextWrapping="Wrap"/>
+                                </Border>
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
                                     <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
                                             ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
@@ -380,6 +425,10 @@
                                                                        FontSize="11" TextTrimming="CharacterEllipsis"/>
                                                             <TextBlock Text="{Binding SourceTexture, StringFormat=source: {0}}" Foreground="{StaticResource Fg.Muted}"
                                                                        FontSize="10" TextTrimming="CharacterEllipsis"/>
+                                                            <TextBlock Text="{Binding ProjectMaterial}" Foreground="{StaticResource Accent.Ok}"
+                                                                       FontSize="10" TextTrimming="CharacterEllipsis"
+                                                                       Visibility="{Binding HasMaterial, Converter={StaticResource BoolToVisibility}}"
+                                                                       ToolTip="This selection also swaps an .rvmat material (auto-copied and repointed)"/>
                                                         </StackPanel>
                                                     </DockPanel>
                                                 </Border>

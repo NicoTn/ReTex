@@ -85,6 +85,10 @@ public static class ConfigGenerator
             if (selNames.Count > 0 && !e.CopiedBody.Contains("hiddenSelections[]", StringComparison.OrdinalIgnoreCase))
                 AppendArray(sb, "hiddenSelections[]", selNames.Select(Quote), 8);
 
+            // Material (rvmat) swaps, index-aligned with hiddenSelections. Generator-owned (the
+            // source copy was stripped from CopiedBody), so it always points at the project's rvmats.
+            EmitMaterials(sb, e, p);
+
             if (e.CopiedBody.Length > 0)
             {
                 // Copied source values (armor, weapon stats, ItemInfo, ...) with the source
@@ -178,7 +182,26 @@ public static class ConfigGenerator
             .Where(s => s.ProjectTexture.Length > 0 || s.SourceTexture.Length > 0).ToList();
         if (textured.Count > 0)
             AppendArray(sb, "hiddenSelectionsTextures[]", textured.Select(s => Quote(TextureFor(s, p))), 8);
+
+        EmitMaterials(sb, e, p);
     }
+
+    /// <summary>Emits hiddenSelectionsMaterials[] index-aligned with hiddenSelections (selections with
+    /// a name, in index order). Each element is the project rvmat's virtual path if the selection was
+    /// material-swapped, else the original source material, else "". Emitted only when some selection
+    /// carries a material - assets without materials produce no line (byte-identical to before).</summary>
+    private static void EmitMaterials(StringBuilder sb, RetexEntry e, RetexProject p)
+    {
+        var sels = e.Selections.Where(s => s.Name.Length > 0).OrderBy(s => s.Index).ToList();
+        if (sels.Count == 0 || !sels.Any(s => s.ProjectMaterial.Length > 0 || s.SourceMaterial.Length > 0)) return;
+        AppendArray(sb, "hiddenSelectionsMaterials[]", sels.Select(s => Quote(MaterialFor(s, p))), 8);
+    }
+
+    /// <summary>Virtual path of a selection's material: the repointed project rvmat if swapped, else the
+    /// original source material, else "" (no override for this selection).</summary>
+    private static string MaterialFor(RetexSelection s, RetexProject p) =>
+        s.ProjectMaterial.Length > 0 ? ProjectVirtual(p, s.ProjectMaterial)
+        : s.SourceMaterial;
 
     /// <summary>Virtual path of a selection's texture: project texture if retextured, else the original.</summary>
     private static string TextureFor(RetexSelection s, RetexProject p) =>

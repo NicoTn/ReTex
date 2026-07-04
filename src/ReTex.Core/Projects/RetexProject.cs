@@ -15,6 +15,14 @@ public sealed class RetexSelection
 
     /// <summary>Texture file inside the project (relative to the addon folder), e.g. "textures\helmet_co.paa".</summary>
     public string ProjectTexture { get; set; } = "";
+
+    /// <summary>Original .rvmat material virtual path from the source config's hiddenSelectionsMaterials
+    /// (empty when the asset exposes no material for this selection).</summary>
+    public string SourceMaterial { get; set; } = "";
+
+    /// <summary>Copied+repointed .rvmat inside the project (relative to the addon folder), e.g.
+    /// "textures\helmet.rvmat". Empty when this selection has no material swap.</summary>
+    public string ProjectMaterial { get; set; } = "";
 }
 
 /// <summary>A single retexture: a new class inheriting a source class with new textures.</summary>

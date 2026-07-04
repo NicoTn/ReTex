@@ -119,19 +119,47 @@ public static class OdolLodReader
         {
             var hdr = OdolReader.ReadHeader(d);
             var mi = OdolReader.ReadModelInfo(d, hdr.HeaderEndOffset, hdr.Version);
-            // Scan the whole file for the first LOD's MinPos. It returns the first anchor that passes
-            // bbox-containment + a valid texture trailer, which for v73 is LOD0 near the front; on
-            // newer layouts (v75) the front LODs don't match the v73 anchor pattern, so the first
-            // match can be further in - a bounded window would miss it entirely.
-            int minPos = FindLodMinPos(d, mi.EndOffset, d.Length, mi.BBoxMin, mi.BBoxMax);
-            if (minPos < 0) return null;
-            m = ReadFromMinPos(d, minPos, hdr.Version);
+            // Scan the file for the best usable LOD. FindLodMinPos returns anchors that pass bbox-
+            // containment + a valid texture trailer. LODs are NOT stored in resolution order, and the
+            // visual LODs can sit anywhere (often AFTER the geometry/shadow LODs, which carry a
+            // degenerate placeholder UV set - all UVs collapse to one texel, so they render
+            // untextured). So we walk ALL anchors and pick the highest-detail (most faces) LOD that
+            // decodes cleanly WITH non-degenerate UVs; if none qualifies we fall back to the first that
+            // decodes at all (which the degenerate-UV guard below then turns into a 2D-preview fallback).
+            LodMeshInfo? firstDecodable = null, bestVisual = null;
+            int searchFrom = mi.EndOffset;
+            for (int guard = 0; guard < 64; guard++)
+            {
+                int minPos = FindLodMinPos(d, searchFrom, d.Length, mi.BBoxMin, mi.BBoxMax);
+                if (minPos < 0) break;
+                LodMeshInfo cand;
+                try { cand = ReadFromMinPos(d, minPos, hdr.Version); }
+                catch { searchFrom = minPos + 1; continue; }
+                // Advance past this LOD's whole vertex table so the next scan finds the NEXT LOD.
+                int lodEnd = cand.VertexTableStartOffset > 0 ? cand.VertexTableStartOffset - 4 + cand.SizeOfVertexTable : minPos;
+                searchFrom = Math.Max(lodEnd, minPos) + 1;
+                if (cand.VertexTableError != null || cand.Points == null) continue;
+                firstDecodable ??= cand;
+                // Non-degenerate UVs: the UV bounds (UvScale = [minU,minV,maxU,maxV]) must span a real
+                // range, not collapse to ~0 (the placeholder case). Among those, keep the most detailed.
+                if (cand.UvScale is { Length: 4 } us && Math.Max(Math.Abs(us[2]), Math.Abs(us[3])) > 0.01f
+                    && (bestVisual is null || cand.FaceCount > bestVisual.FaceCount))
+                    bestVisual = cand;
+            }
+            m = bestVisual ?? firstDecodable!;
+            if (m is null || m.VertexTableError != null || m.Points is null) return null;
         }
         catch { return null; }
-        if (m.VertexTableError != null || m.Points == null) return null;
+        // Degenerate placeholder UVs (all collapse to ~one texel) can't be textured usefully - some
+        // ODOL v75 models store the real UVs in a not-yet-decoded layout and leave a placeholder here.
+        // Returning null makes the app fall back to the flat 2D texture preview instead of rendering a
+        // gray/garbled model.
+        if (m.UvScale is not { Length: 4 } uvScale
+            || Math.Max(Math.Abs(uvScale[2]), Math.Abs(uvScale[3])) <= 0.01f) return null;
 
-        int n = m.Points.Length;
+        int n = m.Points!.Length;
         var uv = DequantizeUvs(m.UvRaw, m.UvScale, n);
+        var uv2 = DequantizeUvs(m.UvRaw2, m.UvScale2, n);
         var normals = UnpackNormals(m.NormalRaw, n);
 
         var sections = m.Sections.Select(s => new OdolSection
@@ -158,19 +186,144 @@ public static class OdolLodReader
         }
         var sectionTex = sections.Select(SectionTex).ToList();
 
+        var faceTex = FaceTextureIndicesFromSections(m.Faces, sections, sectionTex, m.FaceIndexWidth);
+        // Drop proxy triangles (weapon/pistol/launcher/... attachment markers) + degenerate faces, which
+        // are stored in the LOD's face list and otherwise render as huge stray triangles across the
+        // model. They span implausibly far vs the median edge; a robust multiple separates them from
+        // real geometry. Fail-safe: if too many would drop, keep everything (never nuke real geometry).
+        var (faces, faceTexFiltered, keptIndices) = DropSpikeFaces(m.Faces, faceTex, m.Points);
+
+        // Named-selection face membership (hiddenSelections[] -> faces), remapped through the spike
+        // filter so ordinals stay aligned with the kept face list. Enables texture-path-independent
+        // retexture mapping in the preview (OdolMeshPreview).
+        var namedSelections = BuildNamedSelections(m, keptIndices, faces.Count);
+
         return new OdolLodMesh
         {
             Points = m.Points,
             Normals = normals,
             Uv = uv,
-            Faces = m.Faces,
+            Uv2 = uv2,
+            Faces = faces,
             Sections = sections,
             Textures = texList,
             Materials = m.Materials.Select(x => x.RvMatName).ToList(),
-            NamedSelections = new List<OdolNamedSelection>(), // membership not needed for the mesh itself
+            NamedSelections = namedSelections,
             FaceIndexWidth = m.FaceIndexWidth,
-            FaceTextureIndex = FaceTextureIndicesFromSections(m.Faces, sections, sectionTex, m.FaceIndexWidth),
+            FaceTextureIndex = faceTexFiltered,
         };
+    }
+
+    /// <summary>Removes "spike" faces - proxy triangles and degenerate geometry whose longest edge is a
+    /// large multiple (30x) of the median face edge - which otherwise render as stray triangles. Returns
+    /// the filtered faces + their parallel texture indices. No-op if the filter would remove more than 3%
+    /// of faces (guards against models with legitimately varied geometry).</summary>
+    private static (List<OdolFace> Faces, List<int> FaceTex, int[] KeptIndices) DropSpikeFaces(List<OdolFace> faces, List<int> faceTex, float[][] pts)
+    {
+        int[] Identity() { var a = new int[faces.Count]; for (int i = 0; i < a.Length; i++) a[i] = i; return a; }
+        if (faces.Count == 0) return (faces, faceTex, Identity());
+        float LongestEdge(OdolFace f)
+        {
+            float max = 0; var vi = f.VertexTableIndex;
+            for (int i = 0; i < vi.Length; i++)
+            {
+                int a = vi[i], b = vi[(i + 1) % vi.Length];
+                if (a >= pts.Length || b >= pts.Length) continue;
+                float dx = pts[a][0] - pts[b][0], dy = pts[a][1] - pts[b][1], dz = pts[a][2] - pts[b][2];
+                max = Math.Max(max, dx * dx + dy * dy + dz * dz); // squared; compare against squared threshold
+            }
+            return max;
+        }
+        var lens = new float[faces.Count];
+        for (int i = 0; i < faces.Count; i++) lens[i] = LongestEdge(faces[i]);
+        var sorted = (float[])lens.Clone();
+        Array.Sort(sorted);
+        float median = sorted[sorted.Length / 2];
+        if (median <= 0) return (faces, faceTex, Identity());
+        float threshold = median * (30f * 30f); // 30x on edge length == 900x on squared length
+
+        // Distinguish proxy triangles from legitimately large panels by FRACTION. A character/gear LOD
+        // has only a handful of proxy markers (weapon/pistol/... ~0.03% of faces); a vehicle has many
+        // genuinely large hull plates (~0.5%+). So drop the over-long faces only when they are a tiny
+        // fraction of the mesh - otherwise (vehicles/props) leave every face intact.
+        int overLong = 0;
+        for (int i = 0; i < faces.Count; i++) if (lens[i] > threshold) overLong++;
+        if (overLong == 0 || overLong > faces.Count * 0.003) return (faces, faceTex, Identity());
+
+        var keptFaces = new List<OdolFace>(faces.Count);
+        var keptTex = new List<int>(faces.Count);
+        var kept = new List<int>(faces.Count);
+        for (int i = 0; i < faces.Count; i++)
+            if (lens[i] <= threshold) { keptFaces.Add(faces[i]); if (i < faceTex.Count) keptTex.Add(faceTex[i]); kept.Add(i); }
+        return (keptFaces, keptTex, kept.ToArray());
+    }
+
+    /// <summary>Builds <see cref="OdolNamedSelection"/>s (name + per-face membership) from the raw
+    /// face-ordinal lists parsed off the LOD, remapping ordinals through the spike filter's
+    /// <paramref name="keptIndices"/> so membership aligns with the kept face list. Point weights are
+    /// not decoded (unused by the preview), so <see cref="OdolNamedSelection.PointWeights"/> is empty.</summary>
+    private static List<OdolNamedSelection> BuildNamedSelections(LodMeshInfo m, int[] keptIndices, int keptFaceCount)
+    {
+        var result = new List<OdolNamedSelection>();
+        if (m.NamedSelections.Count == 0) return result;
+        // Map old face ordinal -> new (post-filter) ordinal; -1 for dropped faces.
+        var remap = new int[m.Faces.Count];
+        Array.Fill(remap, -1);
+        for (int ni = 0; ni < keptIndices.Length; ni++) remap[keptIndices[ni]] = ni;
+
+        // Face-ordinal [from,to) range of each LodSection (sections partition the face block in order;
+        // FaceMemFrom/To are cumulative MEMORY offsets, stride = width*(1+FaceType)). A sectional
+        // selection's membership is the union of its sections' face ranges.
+        var (secFrom, secTo) = SectionFaceRanges(m.Faces, m.Sections, m.FaceIndexWidth);
+
+        void Mark(byte[] membership, int oldOrdinal)
+        {
+            if (oldOrdinal < 0 || oldOrdinal >= remap.Length) return;
+            int nw = remap[oldOrdinal];
+            if (nw >= 0) membership[nw] = 1;
+        }
+
+        for (int i = 0; i < m.NamedSelections.Count; i++)
+        {
+            var faceIdx = i < m.NamedSelectionFaceIndexes.Count ? m.NamedSelectionFaceIndexes[i] : Array.Empty<int>();
+            var secIdx = i < m.NamedSelectionSectionIndexes.Count ? m.NamedSelectionSectionIndexes[i] : Array.Empty<int>();
+            var membership = new byte[keptFaceCount];
+            if (faceIdx.Length > 0)
+                foreach (int old in faceIdx) Mark(membership, old);
+            else
+                foreach (int s in secIdx)
+                    if (s >= 0 && s < secFrom.Length)
+                        for (int f = secFrom[s]; f < secTo[s]; f++) Mark(membership, f);
+            result.Add(new OdolNamedSelection
+            {
+                Name = m.NamedSelections[i],
+                PointWeights = Array.Empty<byte>(),
+                FaceMembership = membership,
+            });
+        }
+        return result;
+    }
+
+    /// <summary>Computes each LodSection's face-ordinal [from,to) range by walking the face block and
+    /// tracking the cumulative memory cursor (stride = width*(1+FaceType)) against the sections'
+    /// memory-offset bounds - the same accounting <see cref="FaceTextureIndicesFromSections"/> uses.</summary>
+    private static (int[] From, int[] To) SectionFaceRanges(List<OdolFace> faces, List<SectionInfo> sections, int width)
+    {
+        int n = sections.Count;
+        var from = new int[n];
+        var to = new int[n];
+        for (int s = 0; s < n; s++) { from[s] = -1; to[s] = -1; }
+        if (n == 0) return (from, to);
+        int memOffset = 0, si = 0;
+        for (int fi = 0; fi < faces.Count; fi++)
+        {
+            while (si < n - 1 && memOffset >= sections[si].FaceMemTo) si++;
+            if (from[si] < 0) from[si] = fi;
+            to[si] = fi + 1;
+            memOffset += width * (1 + faces[fi].VertexTableIndex.Length);
+        }
+        for (int s = 0; s < n; s++) if (from[s] < 0) { from[s] = 0; to[s] = 0; }
+        return (from, to);
     }
 
     /// <summary>Picks a material's diffuse texture from its stage textures: prefer the colour map
@@ -386,13 +539,30 @@ public static class OdolLodReader
         for (int i = 0; i < nSel; i++)
         {
             string name = ReadAsciiZ(d, ref p);
-            SkipRuleArray(d, ref p, ReadI32(d, ref p), w);   // FaceIndexes (uint32/ushort)
+            // FaceIndexes are ordinals into LodFaces (per the spec) - the faces belonging to this
+            // named selection. hiddenSelections[] retexture works by named selection, so we keep
+            // these to map a retexture onto exactly the right faces in the 3D preview (regardless of
+            // the model's baked texture path). The rule-array framing/consumption is identical to
+            // SkipRuleArray, so VertexTable alignment is unchanged; we merely read instead of skip.
+            int nFaces = ReadI32(d, ref p);
+            byte[] faceRaw = ReadRuleArray(d, ref p, nFaces, w);
             SkipRuleArray(d, ref p, ReadI32(d, ref p), 4);   // Always0 array (ulong)
             Skip(ref p, 1);                                  // IsSectional (tbool)
-            SkipRuleArray(d, ref p, ReadI32(d, ref p), 4);   // SectionIndex (ulong)
+            // SectionIndex[] - for "sectional" selections (the norm for hiddenSelections camo groups on
+            // characters) the face membership is expressed as the LodSections they cover, and FaceIndexes
+            // above is empty. We read these to resolve the retexture onto the right faces via the sections.
+            int nSecIdx = ReadI32(d, ref p);
+            byte[] secRaw = ReadRuleArray(d, ref p, nSecIdx, 4);   // SectionIndex (ulong, indexes LodSections)
             SkipRuleArray(d, ref p, ReadI32(d, ref p), w);   // VertexTableIndexes (uint32/ushort)
             SkipRuleArray(d, ref p, ReadI32(d, ref p), 1);   // VerticesWeights (byte)
+            var faceIdx = new int[nFaces];
+            for (int k = 0; k < nFaces; k++)
+                faceIdx[k] = w == 4 ? (int)BitConverter.ToUInt32(faceRaw, k * 4) : BitConverter.ToUInt16(faceRaw, k * 2);
+            var secIdx = new int[nSecIdx];
+            for (int k = 0; k < nSecIdx; k++) secIdx[k] = (int)BitConverter.ToUInt32(secRaw, k * 4);
             m.NamedSelections.Add(name);
+            m.NamedSelectionFaceIndexes.Add(faceIdx);
+            m.NamedSelectionSectionIndexes.Add(secIdx);
         }
         m.SelectionsEndOffset = p;
 
@@ -431,16 +601,40 @@ public static class OdolLodReader
     {
         try
         {
+            int vtEnd = m.VertexTableStartOffset - 4 + m.SizeOfVertexTable;
+            T($"[VT] start={p} sizeOfVT={m.SizeOfVertexTable} vtEnd={vtEnd}");
             if (version >= 50)
+            {
+                T($"[VT] LodPointFlags @ {p}");
                 ReadArrayWithCount(d, ref p, 4, hasDefaultFill: true, out _); // LodPointFlags (skipped)
+            }
 
+            T($"[VT] UvScale @ {p}");
             m.UvScale = new[] { ReadF32(d, ref p), ReadF32(d, ref p), ReadF32(d, ref p), ReadF32(d, ref p) };
+            T($"[VT]   UvScale={string.Join(",", m.UvScale)}");
+            T($"[VT] DefaultUVset @ {p}");
             m.UvRaw = ReadArrayWithCount(d, ref p, 4, hasDefaultFill: true, out int uvCount); // DefaultUVset LodUV
 
+            T($"[VT] nUVs @ {p}");
             int nUVs = ReadI32(d, ref p);
-            if (nUVs != 1) throw new NotSupportedException($"nUVs={nUVs} (>1 UV set) not yet handled at {p - 4}.");
+            T($"[VT]   nUVs={nUVs}");
+            if (nUVs is < 1 or > 16) throw new InvalidDataException($"Implausible nUVs={nUVs} at {p - 4}.");
+            // Additional UV sets (detail/macro-map coordinates) follow UV set 0. We only texture from
+            // set 0, so read past each extra UvSet (UVScale[4] = 16 bytes + a CompressedFill UV array
+            // in the same 4-byte packed format) to reach the point data. Many Arma-3 character/gear
+            // LODs ship 2 UV sets; the earlier hard throw on nUVs>1 made those LODs undecodable and
+            // forced a fallback to the model's non-visual (geometry) LOD.
+            for (int extra = 1; extra < nUVs; extra++)
+            {
+                var sc = new[] { ReadF32(d, ref p), ReadF32(d, ref p), ReadF32(d, ref p), ReadF32(d, ref p) };
+                var raw = ReadArrayWithCount(d, ref p, 4, hasDefaultFill: true, out _);
+                if (extra == 1) { m.UvScale2 = sc; m.UvRaw2 = raw; } // keep UV set 1 for decal-mapping diagnostics
+                T($"[VT]   read extra UV set {extra} -> {p}");
+            }
 
+            T($"[VT] NoOfPoints @ {p}");
             int noOfPoints = ReadI32(d, ref p);
+            T($"[VT]   NoOfPoints={noOfPoints}, points @ {p}");
             byte[] ptBytes = ReadArrayData(d, ref p, noOfPoints, 12, hasDefaultFill: false); // LodPoints (plain)
             var pts = new float[noOfPoints][];
             for (int i = 0; i < noOfPoints; i++)
@@ -452,9 +646,12 @@ public static class OdolLodReader
                 };
             m.Points = pts;
 
+            T($"[VT] nNormals @ {p}");
             int nNormals = ReadI32(d, ref p);
+            T($"[VT]   nNormals={nNormals}, normals @ {p}");
             m.NormalRaw = ReadArrayData(d, ref p, nNormals, 4, hasDefaultFill: true); // LodNormals (10-bit packed)
             m.VertexTableEndOffset = p;
+            T($"[VT] after normals @ {p} (vtEnd={m.VertexTableStartOffset - 4 + m.SizeOfVertexTable})");
         }
         catch (Exception ex)
         {
@@ -497,8 +694,17 @@ public static class OdolLodReader
             return outp;
         }
 
+        // Arrays >= 1024 bytes carry a packing-flag byte: 0x02 = LZO1x-compressed; 0x00 = stored raw
+        // (uncompressed). Some models (e.g. ODOL v75 CTR Gravis) store the large vertex arrays raw,
+        // so the flag is 0x00 and the `expected` bytes follow verbatim.
         byte flag = d[p++];
-        if (flag != 0x02) throw new NotSupportedException($"Unknown array packing flag 0x{flag:X2} at {p - 1} (expected 0x02 = LZO).");
+        if (flag == 0x00)
+        {
+            Array.Copy(d, p, outp, 0, (int)expected);
+            p += (int)expected;
+            return outp;
+        }
+        if (flag != 0x02) throw new NotSupportedException($"Unknown array packing flag 0x{flag:X2} at {p - 1} (expected 0x00 raw or 0x02 LZO).");
         var dec = Lzo1x.Decompress(d, p, (int)expected, out int consumed);
         p += consumed;
         return dec;
@@ -517,6 +723,22 @@ public static class OdolLodReader
         if (flag == 0) { Skip(ref p, (int)expected); return; }
         Lzo1x.Decompress(d, p, (int)expected, out int consumed);
         p += consumed;
+    }
+
+    /// <summary>Reads a named-selection rule array, returning its <paramref name="count"/>*
+    /// <paramref name="elemSize"/> decoded bytes. Framing/consumption is identical to
+    /// <see cref="SkipRuleArray"/> (1-byte compression flag when count &gt; 0: 0 = raw, else LZO1x),
+    /// so callers can read one array and skip the rest with alignment preserved.</summary>
+    private static byte[] ReadRuleArray(byte[] d, ref int p, int count, int elemSize)
+    {
+        if (count <= 0) return Array.Empty<byte>();
+        long expected = (long)count * elemSize;
+        var outp = new byte[expected];
+        byte flag = d[p++];                                  // compression flag (0 = raw, else LZO1x)
+        if (flag == 0) { Array.Copy(d, p, outp, 0, (int)expected); p += (int)expected; return outp; }
+        var dec = Lzo1x.Decompress(d, p, (int)expected, out int consumed);
+        p += consumed;
+        return dec;
     }
 
     /// <summary>One LodMaterial per ODOL_FORMAT_SPEC.md (ArmA Type 9 layout).</summary>
@@ -584,6 +806,14 @@ public static class OdolLodReader
         public List<OdolFace> Faces { get; } = new();
         public List<SectionInfo> Sections { get; } = new();
         public List<string> NamedSelections { get; } = new();
+        /// <summary>Parallel to <see cref="NamedSelections"/>: the face ordinals (into <see cref="Faces"/>)
+        /// belonging to each named selection - the retexture-to-3D mapping key. Empty for "sectional"
+        /// selections, whose membership is given by <see cref="NamedSelectionSectionIndexes"/> instead.</summary>
+        public List<int[]> NamedSelectionFaceIndexes { get; } = new();
+        /// <summary>Parallel to <see cref="NamedSelections"/>: the LodSection indices (into
+        /// <see cref="Sections"/>) a sectional selection covers - the membership source when
+        /// <see cref="NamedSelectionFaceIndexes"/> is empty.</summary>
+        public List<int[]> NamedSelectionSectionIndexes { get; } = new();
         public List<(string Prop, string Value)> NamedProperties { get; } = new();
         public int FacesStartOffset;
         public int FacesEndOffset;
@@ -595,6 +825,8 @@ public static class OdolLodReader
         public int VertexTableEndOffset;
         public float[]? UvScale;
         public byte[]? UvRaw;      // count*4 bytes (2x uint16 per vertex, dequantize via UvScale)
+        public float[]? UvScale2;  // UV set 1 (when nUVs>1)
+        public byte[]? UvRaw2;
         public byte[]? NormalRaw;  // count*4 bytes (CompressedXYZTriplet, 10-bit packed, scale -1/511)
         public float[][]? Points;  // decoded XYZ vertex positions
         public string? VertexTableError;

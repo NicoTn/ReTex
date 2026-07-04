@@ -1,0 +1,21 @@
+<svg width="256" height="256" viewBox="0 0 256 256" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>ReTex app icon</title>
+<desc>Square navy app icon: a split-hexagon material sample with a hatched raw-texture half, a solid accent-texture half, a bright retexture seam and a paint-drip dot.</desc>
+<defs>
+<clipPath id="hex"><path d="M216 128 L172 51.79 L84 51.79 L40 128 L84 204.21 L172 204.21 Z"/></clipPath>
+<pattern id="hatch" width="22" height="22" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+<rect width="22" height="22" fill="#33486E"/>
+<line x1="0" y1="0" x2="0" y2="22" stroke="#4A648F" stroke-width="4"/>
+</pattern>
+</defs>
+<rect x="0" y="0" width="256" height="256" rx="56" fill="#141D30"/>
+<g clip-path="url(#hex)">
+<rect x="30" y="30" width="98" height="200" fill="url(#hatch)"/>
+<rect x="128" y="30" width="100" height="200" fill="#57B87E"/>
+<circle cx="178" cy="92" r="34" fill="#6ED098" opacity="0.35"/>
+<circle cx="150" cy="176" r="28" fill="#3FA268" opacity="0.4"/>
+</g>
+<path d="M216 128 L172 51.79 L84 51.79 L40 128 L84 204.21 L172 204.21 Z" fill="none" stroke="#1B2740" stroke-width="5"/>
+<line x1="128" y1="56" x2="128" y2="200" stroke="#B7F2D0" stroke-width="6" stroke-linecap="round"/>
+<circle cx="128" cy="214" r="9" fill="#B7F2D0"/>
+</svg>

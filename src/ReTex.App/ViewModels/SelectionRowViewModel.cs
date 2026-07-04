@@ -27,6 +27,10 @@ public partial class SelectionRowViewModel : ObservableObject
     public string SourceTexture => Selection.SourceTexture.Length > 0 ? Selection.SourceTexture : "(none)";
     public string ProjectTexture => Selection.ProjectTexture.Length > 0 ? Selection.ProjectTexture : "(not retextured)";
 
+    /// <summary>True when this selection also swaps an .rvmat material (so the form shows it).</summary>
+    public bool HasMaterial => Selection.ProjectMaterial.Length > 0;
+    public string ProjectMaterial => $"material: {Selection.ProjectMaterial}";
+
     [RelayCommand]
     private void Browse() => _onBrowse(this);
 

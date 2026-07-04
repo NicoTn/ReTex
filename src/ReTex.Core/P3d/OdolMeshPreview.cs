@@ -48,11 +48,19 @@ public static class OdolMeshPreview
         var groups = new Dictionary<string, OdolPreviewGroup>();
         bool haveFaceTex = mesh.FaceTextureIndex.Count == mesh.Faces.Count;
 
+        // Per-face named-selection retexture: hiddenSelections[] replaces the texture on a *named
+        // selection*, not on a texture path, so this is the accurate mapping. faceSel[fi] = the index
+        // of the retexture selection whose named selection owns face fi, or -1. When -1 we fall back to
+        // the path match below (covers models whose selection names don't line up with the config).
+        int[] faceSel = BuildFaceSelectionMap(mesh, selections);
+
         for (int fi = 0; fi < mesh.Faces.Count; fi++)
         {
             int texIdx = haveFaceTex ? mesh.FaceTextureIndex[fi] : -1;
             string def = texIdx >= 0 && texIdx < mesh.Textures.Count ? mesh.Textures[texIdx] : "";
-            var tex = Resolve(def, selections, projectAddonDir);
+            var tex = faceSel[fi] >= 0
+                ? ResolveSelection(def, selections![faceSel[fi]], projectAddonDir) // by named selection
+                : Resolve(def, selections, projectAddonDir);                       // by texture path
 
             string key = tex.ProjectFilePath ?? ("src:" + Normalize(tex.SourceVirtualPath));
             if (!groups.TryGetValue(key, out var g))
@@ -64,6 +72,38 @@ public static class OdolMeshPreview
         }
 
         return groups.Values.Where(g => g.FaceIndices.Count > 0).ToList();
+    }
+
+    /// <summary>Maps each face to the retexture selection (index into <paramref name="selections"/>)
+    /// whose named selection contains it, or -1. First selection wins when a face is shared. Returns an
+    /// all -1 array when the mesh carries no named-selection membership (older parse / MLOD).</summary>
+    private static int[] BuildFaceSelectionMap(OdolLodMesh mesh, IReadOnlyList<RetexSelection>? selections)
+    {
+        var map = new int[mesh.Faces.Count];
+        Array.Fill(map, -1);
+        if (selections is null || mesh.NamedSelections.Count == 0) return map;
+        for (int si = 0; si < selections.Count; si++)
+        {
+            var sel = selections[si];
+            if (sel.Name.Length == 0) continue;
+            var ns = mesh.NamedSelections.FirstOrDefault(x => x.Name.Equals(sel.Name, StringComparison.OrdinalIgnoreCase));
+            if (ns is null) continue;
+            int lim = Math.Min(map.Length, ns.FaceMembership.Length);
+            for (int fi = 0; fi < lim; fi++)
+                if (ns.FaceMembership[fi] != 0 && map[fi] < 0) map[fi] = si;
+        }
+        return map;
+    }
+
+    /// <summary>Resolves the effective texture for a face known (by named-selection membership) to
+    /// belong to <paramref name="sel"/>. Keeps the face's baked <paramref name="faceSourcePath"/> as
+    /// the source label / fallback; swaps in the project .paa when present (else flags Missing).</summary>
+    private static PreviewTexture ResolveSelection(string faceSourcePath, RetexSelection sel, string? projectAddonDir)
+    {
+        if (sel.ProjectTexture.Length == 0)
+            return new PreviewTexture { SourceVirtualPath = faceSourcePath, Missing = true };
+        string proj = projectAddonDir != null ? Path.Combine(projectAddonDir, sel.ProjectTexture) : sel.ProjectTexture;
+        return new PreviewTexture { SourceVirtualPath = faceSourcePath, ProjectFilePath = proj };
     }
 
     private static PreviewTexture Resolve(string defaultVirtualPath, IReadOnlyList<RetexSelection>? selections, string? projectAddonDir)

@@ -43,6 +43,14 @@ public static class RetexProjectService
                 if (s.ProjectTexture.Length > 0 && s.SourceTexture.Length > 0)
                     copiedTextures.TryAdd(NormTex(s.SourceTexture), s.ProjectTexture);
 
+        // Same idea for repointed rvmats: keyed by source material + the texture it was repointed to,
+        // so selections sharing an rvmat AND a texture share one copied .rvmat.
+        var copiedMaterials = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in proj.Entries)
+            foreach (var s in e.Selections)
+                if (s.ProjectMaterial.Length > 0 && s.SourceMaterial.Length > 0)
+                    copiedMaterials.TryAdd(MaterialKey(s.SourceMaterial, s.ProjectTexture), s.ProjectMaterial);
+
         var entry = new RetexEntry
         {
             SourceClass = asset.ClassName,
@@ -80,12 +88,16 @@ public static class RetexProjectService
             // relying on inheritance), and re-declaring an unchanged model path in a derived class is
             // a known way to break hiddenSelections/hiddenSelectionsTextures binding in Arma - the new
             // class already gets the exact same model via inheritance, so copying it adds nothing.
+            // Also drop hiddenSelectionsMaterials: the generator owns it (emits an index-aligned array
+            // pointing at the project's repointed rvmats), so the source's copy must not linger in the
+            // body and point back at the original materials.
             var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model" };
+                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model", "hiddenSelectionsMaterials" };
             entry.CopiedBody = Rap.RapWriter.WriteBody(asset.SourceClassNode, indent: 8, skip);
         }
 
-        int count = Math.Max(asset.HiddenSelections.Count, asset.HiddenSelectionsTextures.Count);
+        int count = Math.Max(asset.HiddenSelections.Count,
+            Math.Max(asset.HiddenSelectionsTextures.Count, asset.HiddenSelectionsMaterials.Count));
         for (int i = 0; i < count; i++)
         {
             var sel = new RetexSelection
@@ -93,6 +105,7 @@ public static class RetexProjectService
                 Index = i,
                 Name = i < asset.HiddenSelections.Count ? asset.HiddenSelections[i] : "",
                 SourceTexture = i < asset.HiddenSelectionsTextures.Count ? asset.HiddenSelectionsTextures[i] : "",
+                SourceMaterial = i < asset.HiddenSelectionsMaterials.Count ? asset.HiddenSelectionsMaterials[i] : "",
             };
 
             bool retex = indices is null || indices.Contains(i);
@@ -107,6 +120,7 @@ public static class RetexProjectService
                     if (sel.ProjectTexture.Length > 0)
                         copiedTextures[key] = sel.ProjectTexture;
                 }
+                CopyAndRepointMaterial(proj, modPboPaths, sel, copiedMaterials);
             }
             entry.Selections.Add(sel);
         }
@@ -122,8 +136,14 @@ public static class RetexProjectService
                 a.ClassName.Equals(uniformUnitName, StringComparison.OrdinalIgnoreCase));
             if (unitAsset is not null)
             {
+                // The uniform ITEM's own model= is its ground/inventory model (e.g. Grav_U.p3d), which
+                // often has a DIFFERENT UV layout than the worn body. The retexture applies to the worn
+                // body - the linked unit's model (e.g. Grav_U_Inceptor.p3d) - so preview the item entry
+                // against THAT model, otherwise the texture maps onto the wrong mesh and looks scrambled.
+                if (unitAsset.Model.Length > 0) entry.SourceModel = unitAsset.Model;
+
                 // Cloned unit carries the same textures and points back at our item.
-                var unitEntry = BuildUniformUnit(proj, entry, unitAsset, modPboPaths, copiedTextures);
+                var unitEntry = BuildUniformUnit(proj, entry, unitAsset, modPboPaths, copiedTextures, copiedMaterials);
                 unitEntry.IsUniformUnit = true;
                 unitEntry.PartnerClass = entry.NewClassName;
                 entry.PartnerClass = unitEntry.NewClassName;
@@ -167,7 +187,7 @@ public static class RetexProjectService
     /// The reciprocal uniformClass link and the class structure are emitted by ConfigGenerator from
     /// the flags/PartnerClass the caller sets - this method only carries selections + textures.
     /// </summary>
-    private static RetexEntry BuildUniformUnit(RetexProject proj, RetexEntry uniformEntry, AssetInfo unitAsset, IReadOnlyList<string> modPboPaths, Dictionary<string, string> copiedTextures)
+    private static RetexEntry BuildUniformUnit(RetexProject proj, RetexEntry uniformEntry, AssetInfo unitAsset, IReadOnlyList<string> modPboPaths, Dictionary<string, string> copiedTextures, Dictionary<string, string> copiedMaterials)
     {
         var unitEntry = new RetexEntry
         {
@@ -179,7 +199,8 @@ public static class RetexProjectService
             NewClassName = UniqueClassName(proj, $"{Slug(proj.Name)}_{unitAsset.ClassName}"),
         };
 
-        int count = Math.Max(unitAsset.HiddenSelections.Count, unitAsset.HiddenSelectionsTextures.Count);
+        int count = Math.Max(unitAsset.HiddenSelections.Count,
+            Math.Max(unitAsset.HiddenSelectionsTextures.Count, unitAsset.HiddenSelectionsMaterials.Count));
         for (int i = 0; i < count; i++)
         {
             var src = i < unitAsset.HiddenSelectionsTextures.Count ? unitAsset.HiddenSelectionsTextures[i] : "";
@@ -188,6 +209,7 @@ public static class RetexProjectService
                 Index = i,
                 Name = i < unitAsset.HiddenSelections.Count ? unitAsset.HiddenSelections[i] : "",
                 SourceTexture = src,
+                SourceMaterial = i < unitAsset.HiddenSelectionsMaterials.Count ? unitAsset.HiddenSelectionsMaterials[i] : "",
             };
             // Reuse the texture already copied for the item or any prior entry; copy extras.
             var key = NormTex(src);
@@ -199,10 +221,69 @@ public static class RetexProjectService
                 if (sel.ProjectTexture.Length > 0)
                     copiedTextures[key] = sel.ProjectTexture;
             }
+            CopyAndRepointMaterial(proj, modPboPaths, sel, copiedMaterials);
             unitEntry.Selections.Add(sel);
         }
 
         return unitEntry;
+    }
+
+    /// <summary>Normalized dedup key for a repointed rvmat: its source path + the texture it was
+    /// repointed to (two selections only share a copied .rvmat when both match).</summary>
+    private static string MaterialKey(string sourceMaterial, string projectTexture) =>
+        NormTex(sourceMaterial) + "|" + projectTexture.Replace('\\', '/').ToLowerInvariant();
+
+    /// <summary>
+    /// Copies a selection's source .rvmat into the project's textures folder with its texture path(s)
+    /// repointed to the selection's project texture, so swapping the material actually applies the
+    /// retexture. No-op when the selection has no source material or hasn't been retextured. The rvmat
+    /// is de-rapified to text first when it's a binarized config. Sets <see cref="RetexSelection.ProjectMaterial"/>.
+    /// </summary>
+    private static void CopyAndRepointMaterial(RetexProject proj, IReadOnlyList<string> modPboPaths, RetexSelection sel, Dictionary<string, string> copiedMaterials)
+    {
+        if (sel.SourceMaterial.Length == 0 || sel.ProjectTexture.Length == 0) return;
+
+        var dedupKey = MaterialKey(sel.SourceMaterial, sel.ProjectTexture);
+        if (copiedMaterials.TryGetValue(dedupKey, out var shared)) { sel.ProjectMaterial = shared; return; }
+
+        var bytes = VirtualFileService.Extract(modPboPaths, sel.SourceMaterial);
+        if (bytes is null) return; // material not found (e.g. compressed) - leave unset
+
+        // rvmats may be binarized (\0raP) or plain text; normalize to text either way.
+        string text = Rap.RapReader.IsRapified(bytes)
+            ? Rap.RapWriter.WriteBody(Rap.RapReader.Parse(bytes), indent: 0)
+            : System.Text.Encoding.UTF8.GetString(bytes);
+
+        // Repoint every reference to the selection's source texture -> the project texture's in-game
+        // virtual path (covers the _co diffuse stage and any other stage using that texture).
+        var target = ConfigGenerator.ProjectVirtual(proj, sel.ProjectTexture);
+        text = RepointTexture(text, sel.SourceTexture, target);
+
+        var raw = Path.GetFileName(sel.SourceMaterial.Replace('\\', '/'));
+        if (Path.GetExtension(raw).Length == 0) raw += ".rvmat";
+        var fileName = UniqueTextureName(proj, raw);
+        Directory.CreateDirectory(proj.TexturesDir);
+        File.WriteAllText(Path.Combine(proj.TexturesDir, fileName), text);
+
+        sel.ProjectMaterial = Path.Combine("textures", fileName);
+        copiedMaterials[dedupKey] = sel.ProjectMaterial;
+    }
+
+    /// <summary>Replaces occurrences of a source texture path with <paramref name="target"/> inside an
+    /// rvmat's text, tolerating path variants (leading backslash, forward/back slashes, no extension).</summary>
+    private static string RepointTexture(string text, string sourceTexture, string target)
+    {
+        if (sourceTexture.Length == 0) return text;
+        foreach (var variant in new[]
+                 {
+                     sourceTexture,
+                     sourceTexture.TrimStart('\\', '/'),
+                     "\\" + sourceTexture.TrimStart('\\', '/'),
+                     sourceTexture.Replace('\\', '/'),
+                     sourceTexture.Replace('/', '\\'),
+                 }.Distinct())
+            text = text.Replace(variant, target, StringComparison.OrdinalIgnoreCase);
+        return text;
     }
 
     /// <summary>
@@ -215,6 +296,14 @@ public static class RetexProjectService
     {
         if (!File.Exists(filePath)) throw new FileNotFoundException("Texture file not found", filePath);
         Directory.CreateDirectory(proj.TexturesDir);
+        // If the chosen file is ALREADY inside the project's textures folder, use it in place - don't
+        // copy it to a "_1" duplicate (the user picked the file they want; copying just clutters the
+        // folder and desyncs later edits). Compare full paths case-insensitively (Windows).
+        var texDirFull = Path.GetFullPath(proj.TexturesDir);
+        var fileFull = Path.GetFullPath(filePath);
+        if (Path.GetDirectoryName(fileFull)?.Equals(texDirFull, StringComparison.OrdinalIgnoreCase) == true)
+            return Path.Combine("textures", Path.GetFileName(fileFull));
+
         var raw = Path.GetFileName(filePath);
         if (Path.GetExtension(raw).Length == 0) raw += ".paa";
         var fileName = UniqueTextureName(proj, raw);
@@ -255,7 +344,7 @@ public static class RetexProjectService
             var root = Rap.CppConfigParser.Parse(configText);
             // Keys the generator always emits itself - never fold these into the copied body.
             var skip = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model" };
+                { "scope", "scopeArsenal", "scopeCurator", "displayName", "baseWeapon", "model", "hiddenSelectionsMaterials" };
 
             bool changed = false;
             foreach (var e in proj.Entries)

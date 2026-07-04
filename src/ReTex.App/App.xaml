@@ -14,6 +14,7 @@
             <conv:NotNullToBoolConverter x:Key="NotNullToBool"/>
             <conv:NullToVisibilityConverter x:Key="NullToVisibility"/>
             <conv:NonEmptyToBoolConverter x:Key="NonEmptyToBool"/>
+            <conv:NonEmptyToVisibilityConverter x:Key="NonEmptyToVisibility"/>
             <BooleanToVisibilityConverter x:Key="BoolToVisibility"/>
         </ResourceDictionary>
     </Application.Resources>

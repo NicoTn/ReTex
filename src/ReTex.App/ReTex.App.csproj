@@ -9,8 +9,14 @@
     <RootNamespace>ReTex.App</RootNamespace>
     <AssemblyName>ReTex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>4.0.2</Version>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <Version>4.4.3</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- App icon: exe icon (ApplicationIcon) plus a Resource copy for Window.Icon / About. -->
+    <Resource Include="app.ico" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.3.2" />

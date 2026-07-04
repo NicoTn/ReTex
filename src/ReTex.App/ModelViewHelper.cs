@@ -10,6 +10,14 @@ namespace ReTex.App;
 /// viewport control in XAML. One <see cref="GeometryModel3D"/> per texture group, textured with a
 /// diffuse <see cref="ImageBrush"/> (front + back material so winding never hides a face in the
 /// preview). Mirrors <see cref="ImageHelper"/>'s pattern of freezing the result for the UI thread.</summary>
+/// <summary>The built model plus a map from each rendered part (<see cref="GeometryModel3D"/>) to
+/// the texture group it came from, so a hover hit-test can name the texture under the cursor.</summary>
+public sealed class BuiltPreview
+{
+    public required Model3DGroup Model { get; init; }
+    public required IReadOnlyDictionary<GeometryModel3D, OdolPreviewGroup> Parts { get; init; }
+}
+
 public static class ModelViewHelper
 {
     /// <summary>
@@ -17,14 +25,18 @@ public static class ModelViewHelper
     /// (project .paa from disk or source .paa extracted from PBOs) - supplied by the caller so this
     /// stays free of the extraction/PAA pipeline. Returns null if the mesh has no usable geometry.
     /// </summary>
-    public static Model3DGroup? Build(OdolLodMesh mesh, IReadOnlyList<OdolPreviewGroup> groups,
+    public static BuiltPreview? Build(OdolLodMesh mesh, IReadOnlyList<OdolPreviewGroup> groups,
         Func<PreviewTexture, BitmapSource?> loadTexture)
     {
         if (mesh.Points.Length == 0 || groups.Count == 0) return null;
 
-        // Shared vertex attributes (Arma X,Y,Z is Y-up, same as WPF).
+        // Arma uses a LEFT-handed coordinate system (X right, Y up, Z forward); WPF Media3D is
+        // RIGHT-handed. Copying X,Y,Z straight across therefore renders the model MIRRORED left-right,
+        // which puts every asymmetric marking (shoulder/knee decals, insignia, text) on the wrong side
+        // and reading backwards. Negate X on positions AND normals to convert handedness so the preview
+        // matches the in-game orientation. (Double-sided materials below keep winding a non-issue.)
         var positions = new Point3DCollection(mesh.Points.Length);
-        foreach (var pt in mesh.Points) positions.Add(new Point3D(pt[0], pt[1], pt[2]));
+        foreach (var pt in mesh.Points) positions.Add(new Point3D(-pt[0], pt[1], pt[2]));
         positions.Freeze();
 
         var texcoords = new PointCollection(mesh.Uv.Length);
@@ -32,15 +44,18 @@ public static class ModelViewHelper
         texcoords.Freeze();
 
         var normals = new Vector3DCollection(mesh.Normals.Length);
-        foreach (var n in mesh.Normals) normals.Add(new Vector3D(n[0], n[1], n[2]));
+        foreach (var n in mesh.Normals) normals.Add(new Vector3D(-n[0], n[1], n[2]));
         normals.Freeze();
 
         var group = new Model3DGroup();
+        var parts = new Dictionary<GeometryModel3D, OdolPreviewGroup>();
         // Self-contained lighting so the model is clearly visible regardless of the viewport's
         // headlight and regardless of normal orientation (ambient fill + two directional lights).
-        group.Children.Add(new AmbientLight(Color.FromRgb(0x60, 0x60, 0x60)));
-        group.Children.Add(new DirectionalLight(Color.FromRgb(0xC0, 0xC0, 0xC0), new Vector3D(-1, -1.5, -1)));
-        group.Children.Add(new DirectionalLight(Color.FromRgb(0x70, 0x70, 0x70), new Vector3D(1, 1, 1)));
+        // Ambient fill kept fairly high so dark armour textures (the common Arma-3 gear case) still
+        // read against the app's dark viewport, plus two directional lights for form/shading.
+        group.Children.Add(new AmbientLight(Color.FromRgb(0x8A, 0x8A, 0x8A)));
+        group.Children.Add(new DirectionalLight(Color.FromRgb(0xC8, 0xC8, 0xC8), new Vector3D(-1, -1.5, -1)));
+        group.Children.Add(new DirectionalLight(Color.FromRgb(0x80, 0x80, 0x80), new Vector3D(1, 1, 1)));
 
         foreach (var g in groups)
         {
@@ -63,9 +78,11 @@ public static class ModelViewHelper
             var model = new GeometryModel3D(geo, material) { BackMaterial = material };
             model.Freeze();
             group.Children.Add(model);
+            parts[model] = g;
         }
 
-        return group.Children.Count == 0 ? null : Freeze(group);
+        if (parts.Count == 0) return null;
+        return new BuiltPreview { Model = Freeze(group), Parts = parts };
     }
 
     private static Material BuildMaterial(PreviewTexture tex, Func<PreviewTexture, BitmapSource?> loadTexture)
