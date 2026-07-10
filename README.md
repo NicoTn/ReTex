@@ -1,4 +1,4 @@
-## ReTex - Arma 3 Retexture Studio
+### ReTex - Arma 3 Retexture Studio
 
 <img width="1872" height="745" alt="image" src="https://github.com/user-attachments/assets/c3e7bdeb-970d-402e-a922-b87fabe1d9bd" />
 
