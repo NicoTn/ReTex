@@ -1,189 +1,155 @@
-# ReTex — Arma 3 Retexture Studio
+# ReTex - Arma 3 Retexture Studio
 
-A Windows desktop app for retexturing Arma 3 mods. Browse your installed Workshop
-mods, find every retexturable asset (weapons, gear, vehicles, props, glasses), pick
-the hidden selections you want to reskin, and ReTex builds a ready-to-load **retexture
-mod** for you: it copies the source textures, generates a correct `config.cpp`, and
-packs the whole thing into a loadable `@mod` PBO — no manual config writing, no
-unpacking PBOs by hand.
+ReTex is a Windows desktop app for creating Arma 3 retexture mods. It scans installed mods,
+finds assets with hidden selections, copies their source textures, generates `config.cpp`, and
+packages the finished project as a loadable `@mod`.
 
-![status](https://img.shields.io/badge/platform-Windows-blue) ![net](https://img.shields.io/badge/.NET-8.0-512BD4)
-
----
+![Windows](https://img.shields.io/badge/platform-Windows-blue)
+![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)
 
 ## Features
 
-- **Mod & asset browser** — scans your Arma 3 `!Workshop` folder, lists every mod, and
-  reads each PBO's config to surface all retexturable classes, grouped by category
-  (Equipment, Weapon, Vehicle, Unit, Prop, Backpack, Glasses). Filter by PBO, category,
-  or name.
-- **Native config parsing** — reads both binarized `config.bin` (rapified) and plain
-  `config.cpp`, with no external tools. Resolves `hiddenSelections` /
-  `hiddenSelectionsTextures` up the inheritance chain, including across PBOs in the same
-  mod.
-- **2D texture preview** — decodes `.paa` (DXT1/DXT5 + LZO) and shows the selected
-  asset's texture inline.
-- **One-click retexture** — pick which hidden selections to reskin (per-selection
-  checkboxes), and ReTex copies the source `.paa`(s) into your project. Optional **Copy
-  source values** carries over armor/weapon stats and `ItemInfo` so worn gear keeps
-  working.
-- **Config editor with syntax highlighting** — the generated `config.cpp` is shown in a
-  full code editor (keyword/string/comment/number coloring, line numbers, `Ctrl+F`
-  find). Edit by hand or regenerate from the project.
-- **Project management** — New / Open project, list / remove / **Edit** retextures
-  (opens the copied `.paa` in your default image editor for a GIMP/Photoshop round-trip),
-  and **Retexture all listed** to batch-add everything currently shown.
-- **One-click packing** — **Pack @Mod** writes `mod.cpp` + `addons\main.pbo` into a
-  proper `@`-folder you can drop straight into your Arma 3 mods and load.
-
----
+- **Mod and asset browser**: scans Workshop or local mod folders and groups retexturable equipment,
+  weapons, vehicles, units, props, backpacks, and glasses.
+- **Native config parsing**: reads both rapified `config.bin` and plain `config.cpp`, including
+  inheritance and cross-PBO hidden-selection values.
+- **2D texture preview**: decodes Arma `.paa` textures, including DXT1, DXT5, and LZO data.
+- **3D model preview**: reads modern ODOL v73/v75 and MLOD models, maps materials and hidden
+  selections, and displays project textures directly on the model.
+- **UV inspection tools**: identify model parts, locate clicked geometry on the texture, display a
+  UV grid, and temporarily adjust UV orientation for diagnostics.
+- **Live texture reload**: watches the selected project entry's PAA files and updates the existing
+  2D image and 3D material in place when an external editor saves or replaces them. The model,
+  geometry, UVs, and camera are not rebuilt.
+- **Project management**: create or open projects, add individual assets or batches, duplicate and
+  remove entries, and open copied textures in the configured image editor.
+- **Config editor**: edit generated `config.cpp` with syntax highlighting, line numbers, and search.
+- **One-click packaging**: generates `mod.cpp` and packs `addons\main.pbo` into a ready-to-load
+  Arma 3 mod folder.
 
 ## Requirements
 
-### To run the app
+### Running ReTex
 
 | Requirement | Notes |
-|---|---|
-| **Windows 10 / 11 (x64)** | The app is WPF; Windows only. |
-| **.NET 8 Desktop Runtime** | Only for the *framework-dependent* download. The **self-contained release has the runtime bundled** — nothing to install. Get it at <https://dotnet.microsoft.com/download/dotnet/8.0> (choose *Desktop Runtime x64*). |
-| **PBO Manager (pboman3)** | Provides `pboc.exe`, used for the **Pack @Mod** step only. ReTex auto-detects both the per-user install (`%LOCALAPPDATA%\PBO Manager\pboc.exe`) and the all-users install (`%ProgramFiles%\PBO Manager\pboc.exe`). Get it from <https://github.com/winseros/pboman3>. Browsing, previewing, copying textures, and config generation all work **without** it — you only need it to pack the final PBO. |
-| **Arma 3 + Workshop mods** | Needed to have something to retexture. Point ReTex at your `…\Steam\steamapps\common\Arma 3\!Workshop` folder. |
+| --- | --- |
+| Windows 10 or 11 x64 | ReTex uses WPF and is Windows-only. |
+| Arma 3 and source mods | Select an Arma 3 mod folder or Workshop directory to scan. |
+| [PBO Manager](https://github.com/winseros/pboman3) | Required only for **Pack @Mod**. ReTex automatically locates `pboc.exe` in standard per-user and all-users install paths. |
+| .NET 8 Desktop Runtime | Required only for framework-dependent builds. Self-contained releases include the runtime. |
 
-### Optional
+An image editor capable of working with PAA files is recommended. BI's TexView 2, included with
+Arma 3 Tools on Steam, can convert between PAA and common image formats.
 
-| Tool | Why |
-|---|---|
-| **GIMP** or **Photoshop** with a **PAA plugin** | To actually paint the copied `.paa` textures. The **Edit** button opens them in your default `.paa` handler. PAA plugins: [Photoshop](https://community.bistudio.com/wiki/PAA_File_Format) tools / GIMP DDS + PAA conversion, or BI's **TexView 2** (part of Arma 3 Tools on Steam) to convert PAA↔PNG. |
-| **Mikero's Tools (AIO)** | The all-in-one modding suite — **DeRap** (binarized `config.bin` → readable `config.cpp`), **DePbo / ExtractPbo**, **MakePbo / pboProject**, etc. Useful for manually inspecting a mod's config or unpacking PBOs when you want to dig in beyond what ReTex shows. ReTex parses configs natively and packs via `pboc`, so this is **not required**, but it's the standard toolkit for Arma config/PBO work. Download (AIO installer): <https://mikero.bytex.digital/Downloads>. |
-| **Arma 3 Tools** (Steam) | TexView 2, Addon Builder, etc. — handy but not required by ReTex. |
+### Building from source
 
-### To build from source
+- [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
+- NuGet access for the first restore
 
-| Requirement | Notes |
-|---|---|
-| **.NET 8 SDK** | <https://dotnet.microsoft.com/download/dotnet/8.0>. Includes everything needed to `build`/`publish`. |
-| NuGet packages | Restored automatically on build: **CommunityToolkit.Mvvm** (MVVM), **AvalonEdit** (config editor), **lzo.net** (PAA decompression). |
+## Install
 
----
+1. Download `ReTex-win-x64.zip` from [Releases](../../releases).
+2. Extract it to any folder.
+3. Run `ReTex.exe`.
+4. Install [PBO Manager](https://github.com/winseros/pboman3) if you want ReTex to package PBOs.
 
-## Download & run (release)
-
-1. Download the latest `ReTex-win-x64.zip` from [Releases](../../releases).
-2. Unzip anywhere and run **`ReTex.exe`**.
-3. (For packing) install [PBO Manager](https://github.com/winseros/pboman3) if you
-   haven't — ReTex finds `pboc.exe` automatically.
-
-The self-contained build needs **no .NET install**.
-
----
+The self-contained release does not require a separate .NET installation.
 
 ## Quick start
 
-1. **Set your mods folder** — paste your `…\Arma 3\!Workshop` path at the top and click
-   **Scan** (it's remembered between sessions).
-2. **Pick a mod**, then **pick an asset** from the list. Its texture previews on the right.
-3. Tick the **selections** you want to retexture and set a **project name**.
-4. Click **Retexture selected asset →**. ReTex copies the source `.paa`(s) and generates
-   the config.
-5. Click **Edit** to open the copied texture in your image editor, paint it, and save in
-   place.
-6. Click **Pack @Mod**. Load the resulting `@<project>` folder in Arma 3 — your retexture
-   appears in Arsenal / the editor.
+1. Set the mod folder at the top of the window and select **Scan**.
+2. Choose a mod and then an asset.
+3. Review the texture or 3D model preview.
+4. Select the hidden selections you want to retexture.
+5. Enter a project name and choose **Retexture selected asset**.
+6. Use **Edit project** to open the copied texture, make your changes, and save it in place.
+7. ReTex detects the save and swaps the 3D material immediately without rebuilding the model.
+8. Choose **Pack @Mod** and load the generated `@<project>` folder in Arma 3.
 
----
+Projects retain their selected classes, source models, textures, materials, and generated class
+names, so they can be reopened and regenerated later.
 
-## Build from source
+## Build
 
-```sh
-git clone <this-repo>
-cd ReTex_App
-
-# build everything
+```powershell
+git clone <repository-url>
+Set-Location ReTex_App
 dotnet build ReTex_App.sln -c Release
-
-# run the app
-dotnet run --project src/ReTex.App -c Release
+dotnet run --project src/ReTex.App/ReTex.App.csproj -c Release
 ```
 
-### Produce a release build
+Close any running ReTex instance before rebuilding because Windows can lock the current executable
+and assemblies.
 
-Self-contained, single-file, no .NET install required on the target machine:
+## Package
 
-```sh
-dotnet publish src/ReTex.App/ReTex.App.csproj -c Release -r win-x64 ^
-  --self-contained true ^
-  -p:PublishSingleFile=true ^
-  -p:IncludeNativeLibrariesForSelfExtract=true ^
+Create a self-contained, single-file Windows release:
+
+```powershell
+dotnet publish src/ReTex.App/ReTex.App.csproj `
+  -c Release `
+  -r win-x64 `
+  --self-contained true `
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true `
   -o artifacts/ReTex-win-x64
 ```
 
-Framework-dependent (smaller; requires the .NET 8 Desktop Runtime on the target):
+Create a smaller framework-dependent release:
 
-```sh
-dotnet publish src/ReTex.App/ReTex.App.csproj -c Release -r win-x64 ^
-  --self-contained false -o artifacts/ReTex-win-x64-fxdep
+```powershell
+dotnet publish src/ReTex.App/ReTex.App.csproj `
+  -c Release `
+  -r win-x64 `
+  --self-contained false `
+  -o artifacts/ReTex-win-x64-fxdep
 ```
 
-> **Note:** close any running instance of ReTex before building — the running app locks
-> `ReTex.exe` / `ReTex.Core.dll` in `bin\Debug`, which produces `MSB3027` / `MSB3021`
-> *copy* errors. Those are file-lock errors, not compile errors.
+## Project structure
 
----
-
-## Project layout
-
-```
+```text
 ReTex_App/
   ReTex_App.sln
   src/
-    ReTex.Core/                     UI-agnostic logic (no WPF deps; testable)
-      Pbo/PboArchive.cs             parse PBO header; list + extract entries (no full unpack)
-      Pbo/VirtualFileService.cs     resolve a virtual texture path to bytes across a mod's PBOs
-      Mods/ModScanner.cs            discover @-mods under a folder (follows Workshop junctions)
-      Rap/RapReader.cs              native binarized config.bin (rapified) parser
-      Rap/CppConfigParser.cs        plain-text config.cpp parser
-      Rap/RapWriter.cs              serialize a class body (for the copied-values feature)
-      Assets/AssetExtractor.cs      find retexturable classes + resolve inheritance
-      Assets/AssetService.cs        load assets for a whole mod (global cross-PBO index)
-      Paa/PaaImage.cs               decode .paa (DXT1/5 + LZO) for preview
-      Projects/RetexProjectService  create project, add retexture, copy .paa, pack
-      Projects/ConfigGenerator.cs   emit config.cpp (new classes, textures, requiredAddons)
-      Tools/PboTool.cs              pboc.exe (pboman3) wrapper for pack/unpack
-      P3d/OdolReader.cs             ODOL v73 header/skeleton parse (3D preview — paused)
-    ReTex.App/                      WPF front-end (MVVM, CommunityToolkit.Mvvm)
-      MainWindow.xaml               Mods | Assets | Detail+preview+project+config editor
-      ArmaConfig.xshd               AvalonEdit syntax grammar for config.cpp
-      AvalonEditBehaviour.cs        two-way text binding for the editor
-      ViewModels/MainViewModel.cs
-  tools/                            dev/diagnostic console apps (not shipped)
-    Probe/                          end-to-end pipeline validator + PBO/config diagnostics
-    RapDump/                        dump a parsed config tree
-    PaaDump/                        dump PAA header/decode info
+    ReTex.Core/
+      Assets/                 Asset discovery and inheritance resolution
+      Mods/                   Arma mod scanning
+      P3d/                    ODOL/MLOD mesh, UV, material, and selection decoding
+      Paa/                    PAA texture decoding
+      Pbo/                    PBO reading and virtual-path resolution
+      Projects/               Project storage, config generation, and packaging
+      Rap/                    config.bin and config.cpp parsing
+      Tools/                  External tool wrappers
+    ReTex.App/
+      ViewModels/             Application state and commands
+      MainWindow.xaml         Main WPF interface
+      ModelViewHelper.cs      WPF 3D model construction and UV visualization
+      ArmaConfig.xshd         Config syntax-highlighting rules
+  tools/
+    Probe/                    PBO, P3D, config, and pipeline diagnostics
+    PaaDump/                  PAA diagnostics
+    RapDump/                  Parsed config-tree diagnostics
+    WpfRender/                Headless 3D-preview renderer
 ```
 
----
+The detailed modern ODOL layout used by the preview is documented in
+[`src/ReTex.Core/P3d/ODOL_FORMAT_SPEC.md`](src/ReTex.Core/P3d/ODOL_FORMAT_SPEC.md).
 
 ## How it works
 
-1. **Scan** discovers `@`-mods under your Workshop folder (Workshop entries are NTFS
-   junctions; the .NET directory APIs follow them).
-2. For each PBO, ReTex reads the header and extracts the config (`config.bin` or
-   `config.cpp`) **without unpacking** the whole archive, then parses it natively.
-3. `AssetExtractor` walks `CfgWeapons` / `CfgVehicles` / `CfgGlasses`, resolving
-   `hiddenSelections` up the inheritance chain (across all of the mod's PBOs) so variants
-   that only override textures are still caught.
-4. On **Retexture**, the chosen source `.paa`(s) are copied into the project's
-   `textures/` folder, and `ConfigGenerator` emits new classes that inherit the original,
-   repoint `hiddenSelectionsTextures[]` at the copies, and declare the right
-   `requiredAddons` (the source mod's `CfgPatches` addon).
-5. **Pack @Mod** runs `pboc` to build `addons\main.pbo`, alongside a generated `mod.cpp`,
-   producing a loadable `@`-folder.
+1. `ModScanner` discovers Arma mod folders and their PBO files.
+2. ReTex reads each PBO directory and extracts only the files it needs.
+3. The RAP or C++ parser loads the source config without requiring external extraction tools.
+4. `AssetExtractor` resolves classes and inherited hidden selections across the mod's PBOs.
+5. The PAA and P3D readers build the 2D and 3D previews.
+6. `RetexProjectService` copies selected textures into the project.
+7. `ConfigGenerator` creates inheriting classes with updated texture and material paths.
+8. **Pack @Mod** invokes `pboc.exe` and writes the final mod folder.
 
----
+## Third-party components
 
-## Credits / third-party
-
-- [pboman3](https://github.com/winseros/pboman3) — `pboc` PBO pack/unpack CLI.
-- [AvalonEdit](https://github.com/icsharpcode/AvalonEdit) — config editor.
-- [lzo.net](https://github.com/zzattack/lzo.net) — LZO decompression for PAA.
-- [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet) — MVVM.
+- [pboman3](https://github.com/winseros/pboman3): PBO packing through `pboc.exe`
+- [AvalonEdit](https://github.com/icsharpcode/AvalonEdit): config editor
+- [lzo.net](https://github.com/zzattack/lzo.net): LZO support
+- [CommunityToolkit.Mvvm](https://github.com/CommunityToolkit/dotnet): MVVM framework
+- [Helix Toolkit](https://github.com/helix-toolkit/helix-toolkit): WPF 3D viewport

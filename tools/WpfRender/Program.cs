@@ -165,6 +165,17 @@ internal static class Program
         }
 
         var groups = OdolMeshPreview.BuildGroups(mesh, null, null);
+        bool liveMaterialSmoke = args.Contains("--live-material-smoke", StringComparer.OrdinalIgnoreCase);
+        if (liveMaterialSmoke)
+            groups = groups.Select(g => new OdolPreviewGroup
+            {
+                Texture = new PreviewTexture
+                {
+                    SourceVirtualPath = g.Texture.SourceVirtualPath,
+                    ProjectFilePath = Path.GetFullPath("live-material-smoke.paa"),
+                },
+                FaceIndices = g.FaceIndices,
+            }).ToList();
         var uvXform = new UvXform(
             FlipU: args.Contains("--flipu", StringComparer.OrdinalIgnoreCase),
             FlipV: args.Contains("--flipv", StringComparer.OrdinalIgnoreCase),
@@ -173,6 +184,15 @@ internal static class Program
             OffsetV: 0);
         var built = ModelViewHelper.Build(mesh, groups, _ => bmp, uvXform);
         if (built is null) { Console.WriteLine("ModelViewHelper.Build returned null"); return 1; }
+        if (liveMaterialSmoke)
+        {
+            built = ModelViewHelper.ActivateLiveTextures(built.Model, groups);
+            int bindings = built.ProjectTextureBrushes.Values.Sum(list => list.Count);
+            if (bindings == 0) { Console.WriteLine("Live material activation produced no brushes"); return 1; }
+            foreach (var brush in built.ProjectTextureBrushes.Values.SelectMany(list => list))
+                brush.ImageSource = bmp;
+            Console.WriteLine($"Live material activation updated {bindings} brush binding(s) in place");
+        }
         Model3D model = built.Model;
 
         // Frame the model with a perspective camera on +Z looking toward -Z (same view as the

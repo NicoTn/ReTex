@@ -26,7 +26,11 @@ public partial class MainWindow : Window
             // Re-fit the camera whenever a new 3D model is loaded.
             vm.PropertyChanged += OnViewModelPropertyChanged;
         };
-        Closing += (_, _) => SaveWindowState();
+        Closing += (_, _) =>
+        {
+            SaveWindowState();
+            ((MainViewModel)DataContext).Dispose();
+        };
 
         // Hover-to-identify: name the texture of the model part under the cursor.
         Viewport.MouseMove += Viewport_MouseMove;

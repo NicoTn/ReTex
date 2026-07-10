@@ -267,6 +267,14 @@
                                 </StackPanel>
 
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
+                                    <TextBlock Text="{Binding TextureWatchStatus}" Foreground="#FF71D49B" FontSize="10"
+                                               VerticalAlignment="Center" Margin="0,0,8,0"
+                                               Visibility="{Binding TextureWatchStatus, Converter={StaticResource NonEmptyToVisibility}}"
+                                               ToolTip="Project texture saves are detected and reloaded automatically"/>
+                                    <Button Content="✎ Edit project" Padding="8,2" Margin="0,0,6,0"
+                                            Command="{Binding EditEntryTexturesCommand}"
+                                            Visibility="{Binding TextureWatchStatus, Converter={StaticResource NonEmptyToVisibility}}"
+                                            ToolTip="Open the watched project PAA files; saving them reloads both previews"/>
                                     <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
                                             ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
                                     <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"
@@ -296,6 +304,14 @@
                                     <TextBlock Text="{Binding HoverTexture}" Foreground="{StaticResource Fg.Primary}" FontSize="11" TextWrapping="Wrap"/>
                                 </Border>
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Top" HorizontalAlignment="Right" Margin="0,4,4,0">
+                                    <TextBlock Text="{Binding TextureWatchStatus}" Foreground="#FF71D49B" FontSize="10"
+                                               VerticalAlignment="Center" Margin="0,0,8,0"
+                                               Visibility="{Binding TextureWatchStatus, Converter={StaticResource NonEmptyToVisibility}}"
+                                               ToolTip="Project texture saves are detected and reloaded automatically"/>
+                                    <Button Content="✎ Edit project" Padding="8,2" Margin="0,0,6,0"
+                                            Command="{Binding EditEntryTexturesCommand}"
+                                            Visibility="{Binding TextureWatchStatus, Converter={StaticResource NonEmptyToVisibility}}"
+                                            ToolTip="Open the watched project PAA files; saving them reloads both previews"/>
                                     <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
                                             ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
                                     <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"

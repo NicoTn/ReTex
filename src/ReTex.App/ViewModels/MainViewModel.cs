@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Media.Media3D;
 using System.Windows.Threading;
@@ -21,7 +22,7 @@ namespace ReTex.App.ViewModels;
 /// <summary>Status-line severity, drives the status bar colour.</summary>
 public enum StatusSeverity { Info, Warn, Error }
 
-public partial class MainViewModel : ObservableObject
+public partial class MainViewModel : ObservableObject, IDisposable
 {
     private readonly AppSettings _settings = AppSettings.Load();
 
@@ -73,6 +74,9 @@ public partial class MainViewModel : ObservableObject
     private OdolLodMesh? _cachedMesh;
     private IReadOnlyList<OdolPreviewGroup>? _cachedGroups;
     private Func<PreviewTexture, BitmapSource?>? _cachedTexLoader;
+    private Dictionary<string, BitmapSource?>? _cachedTextureBitmaps;
+    private IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>>? _cachedTextureBrushes;
+    private int _previewModelLoadVersion;
     // Diagnostic mode: dress the whole model in a labelled UV coordinate grid so texture placement can be
     // checked region-by-region against the game. Built lazily on the UI thread; frozen for cross-thread use.
     [ObservableProperty] private bool _diagnosticGrid;
@@ -135,10 +139,12 @@ public partial class MainViewModel : ObservableObject
         try
         {
             var loader = DiagnosticGrid ? (_ => DiagGrid) : _cachedTexLoader;
-            var built = ModelViewHelper.Build(_cachedMesh, _cachedGroups, loader, CurrentUvXform);
+            var frozen = ModelViewHelper.Build(_cachedMesh, _cachedGroups, loader, CurrentUvXform);
+            var built = frozen is null ? null : ModelViewHelper.ActivateLiveTextures(frozen.Model, _cachedGroups);
             PreserveCameraOnNextPreview = true;   // same model — don't re-fit the camera on a UV tweak
             PreviewModel3D = built?.Model;
             PreviewPartLabels = built?.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, _cachedMesh));
+            _cachedTextureBrushes = built?.ProjectTextureBrushes;
         }
         catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
     }
@@ -304,9 +310,16 @@ public partial class MainViewModel : ObservableObject
     [ObservableProperty] private bool _pbocReady;
     [ObservableProperty] private string _pbocTooltip = "";
 
-    // Re-fires the preview shortly after a project .paa changes on disk (external editor save).
+    // Live reload for project PAAs. The watcher covers the addon's directory, while the exact-path
+    // set limits refreshes to textures used by the currently selected entry.
     private FileSystemWatcher? _texWatcher;
     private readonly DispatcherTimer _texDebounce;
+    private readonly object _textureWatchGate = new();
+    private readonly HashSet<string> _watchedTexturePaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _pendingTexturePaths = new(StringComparer.OrdinalIgnoreCase);
+    private int _textureWatchVersion;
+    private bool _disposed;
+    [ObservableProperty] private string _textureWatchStatus = "";
 
     public MainViewModel()
     {
@@ -314,11 +327,24 @@ public partial class MainViewModel : ObservableObject
         ProjectsRoot = _settings.ProjectsRoot;
         LoadRecents();
         RefreshPbocStatus();
-        _texDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(400) };
-        _texDebounce.Tick += (_, _) => { _texDebounce.Stop(); RefreshPreview(); };
+        _texDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+        _texDebounce.Tick += async (_, _) =>
+        {
+            _texDebounce.Stop();
+            await RefreshChangedTexturesAsync();
+        };
         _prevEditorTab = Math.Clamp(_settings.LastEditorTab, 0, 1);
         EditorTabIndex = _prevEditorTab;
         if (Directory.Exists(WorkshopPath)) ScanWorkshop();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _texDebounce.Stop();
+        _texWatcher?.Dispose();
+        _texWatcher = null;
     }
 
     /// <summary>Sets the status line text and severity in one call.</summary>
@@ -470,6 +496,7 @@ public partial class MainViewModel : ObservableObject
     private sealed record PreviewSlot(string Label, PreviewKind Kind, string Path);
     private List<PreviewSlot> _previewSlots = new();
     private int _previewIndex;
+    private int _previewImageLoadVersion;
 
     [RelayCommand]
     private void LoadPreview()
@@ -501,6 +528,7 @@ public partial class MainViewModel : ObservableObject
     /// are read from disk. Updates <see cref="PreviewCounter"/> so the arrows appear only when >1.</summary>
     private async Task ShowPreviewSlot(int index)
     {
+        int loadVersion = Interlocked.Increment(ref _previewImageLoadVersion);
         if (_previewSlots.Count == 0)
         {
             _previewIndex = 0;
@@ -526,12 +554,18 @@ public partial class MainViewModel : ObservableObject
                 var bytes = ExtractAcrossMods(allPbos, selPbos, slot.Path);
                 return bytes is null ? null : PaaImage.Load(bytes);
             });
+            if (loadVersion != _previewImageLoadVersion) return;
             if (img is null) { PreviewImage = null; PreviewInfo = $"({slot.Label}: texture not found)"; return; }
             PreviewImage = ImageHelper.ToBitmap(img);
             string tag = slot.Kind == PreviewKind.ProjectFile ? "project" : "source";
             PreviewInfo = $"{slot.Label}  {img.Width}x{img.Height}  ({tag})";
         }
-        catch (Exception ex) { PreviewImage = null; PreviewInfo = $"(preview failed: {ex.Message})"; }
+        catch (Exception ex)
+        {
+            if (loadVersion != _previewImageLoadVersion) return;
+            PreviewImage = null;
+            PreviewInfo = $"(preview failed: {ex.Message})";
+        }
     }
 
     private void ApplyAssetFilter()
@@ -558,6 +592,7 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Points the view model at a project: updates the header, MRU and texture watcher.</summary>
     private void SetProject(RetexProject proj)
     {
+        SelectedEntry = null;
         _project = proj;
         CurrentProjectName = proj.Name;
         CurrentProjectPath = proj.ProjectFilePath;
@@ -692,6 +727,7 @@ public partial class MainViewModel : ObservableObject
     {
         RenameText = value?.NewClassName ?? "";
         RebuildEntryForm(value);
+        UpdateWatchedTexturePaths(value);
         if (_project is null || value is null) { _previewSlots = new(); _ = ShowPreviewSlot(0); return; }
         // One previewable slot per selection: the retextured project .paa when present, else the source
         // texture. The prev/next arrows then cycle through every selection of this retexture.
@@ -865,12 +901,15 @@ public partial class MainViewModel : ObservableObject
     /// The model is resolved across ALL scanned mods (not just the selected one) so a project entry
     /// previews from its own source mod without the user having to re-select it. Falls back with an
     /// explanatory message when the model can't be extracted or decoded, leaving the flat tab.</summary>
-    private async Task LoadPreviewModel(string? modelVirtualPath, IReadOnlyList<RetexSelection>? selections)
+    private async Task LoadPreviewModel(string? modelVirtualPath, IReadOnlyList<RetexSelection>? selections,
+        bool preserveCamera = false)
     {
+        int loadVersion = Interlocked.Increment(ref _previewModelLoadVersion);
         _lastPreviewModel = modelVirtualPath;      // remembered so the UV-debug controls can rebuild
         _lastPreviewSelections = selections;
         var uvXform = CurrentUvXform;
-        _cachedMesh = null; _cachedGroups = null; _cachedTexLoader = null;   // invalidate live-rebuild cache
+        _cachedMesh = null; _cachedGroups = null; _cachedTexLoader = null;
+        _cachedTextureBitmaps = null; _cachedTextureBrushes = null;          // invalidate live-reload cache
         HighlightModel3D = null; PickInfo = "";                              // clear stale pick/highlight
         PreviewModel3D = null;
         PreviewModelInfo = "";
@@ -889,7 +928,7 @@ public partial class MainViewModel : ObservableObject
         var texCache = new Dictionary<string, BitmapSource?>();
         BitmapSource? Loader(PreviewTexture tex)
         {
-            var key = (tex.ProjectFilePath ?? "") + "|" + tex.SourceVirtualPath;
+            var key = TextureCacheKey(tex);
             if (!texCache.TryGetValue(key, out var b)) { b = LoadPreviewTexture(tex, allPbos, selPbos); texCache[key] = b; }
             return b;
         }
@@ -916,6 +955,15 @@ public partial class MainViewModel : ObservableObject
                 var sum = DescribeModel(m, g);
                 return (built?.Model, infoStr, (IReadOnlyDictionary<GeometryModel3D, string>?)lbl, sum, m, (IReadOnlyList<OdolPreviewGroup>?)g);
             });
+            if (loadVersion != _previewModelLoadVersion) return;
+            if (model is not null && groups is not null)
+            {
+                var live = ModelViewHelper.ActivateLiveTextures(model, groups);
+                model = live.Model;
+                labels = live.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, mesh!));
+                _cachedTextureBrushes = live.ProjectTextureBrushes;
+            }
+            if (preserveCamera) PreserveCameraOnNextPreview = true;
             PreviewModel3D = model;
             PreviewModelInfo = info;
             PreviewPartLabels = labels;
@@ -924,9 +972,25 @@ public partial class MainViewModel : ObservableObject
             if (mesh is not null && groups is not null && model is not null)
             {
                 _cachedMesh = mesh; _cachedGroups = groups; _cachedTexLoader = Loader;
+                _cachedTextureBitmaps = texCache;
             }
         }
-        catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
+        catch (Exception ex)
+        {
+            if (loadVersion == _previewModelLoadVersion)
+                PreviewModelInfo = $"(3D preview failed: {ex.Message})";
+        }
+    }
+
+    private static string TextureCacheKey(PreviewTexture tex)
+    {
+        string projectPath = tex.ProjectFilePath ?? "";
+        if (projectPath.Length > 0)
+        {
+            try { projectPath = Path.GetFullPath(projectPath); }
+            catch { /* keep the original path as the cache identity */ }
+        }
+        return projectPath + "|" + tex.SourceVirtualPath;
     }
 
     /// <summary>One-line label for a hovered model part: its texture (retextured or source) plus the
@@ -1096,44 +1160,247 @@ public partial class MainViewModel : ObservableObject
         catch (Exception ex) { SetStatus($"Couldn't open source config: {ex.Message}", StatusSeverity.Error); }
     }
 
-    /// <summary>Re-runs the preview for whatever is currently selected. Used by the Refresh button
-    /// and the texture-file watcher so an external .paa edit shows up without reselecting.</summary>
+    /// <summary>Re-runs the preview for whatever is currently selected without resetting the current
+    /// texture slot. The watcher uses the same path but preserves the 3D camera.</summary>
     [RelayCommand]
-    private void RefreshPreview()
+    private void RefreshPreview() => RefreshPreviewCore(preserveCamera: false, changedPaths: null);
+
+    private void RefreshPreviewCore(bool preserveCamera, IReadOnlyCollection<string>? changedPaths)
     {
-        if (SelectedEntry is not null) { OnSelectedEntryChanged(SelectedEntry); SetStatus("Preview refreshed."); }
-        else if (SelectedAsset is not null) OnSelectedAssetChanged(SelectedAsset);
+        if (SelectedEntry is not null)
+        {
+            _ = ShowPreviewSlot(_previewIndex);
+            _ = LoadPreviewModel(PreviewModelFor(SelectedEntry), SelectedEntry.Selections, preserveCamera);
+        }
+        else if (SelectedAsset is not null)
+        {
+            _ = ShowPreviewSlot(_previewIndex);
+            _ = LoadPreviewModel(SelectedAsset.Model, null, preserveCamera);
+        }
+
+        if (changedPaths is null)
+            SetStatus("Preview refreshed.");
+        else if (changedPaths.Count > 0)
+            SetStatus($"Live preview updated: {string.Join(", ", changedPaths.Select(Path.GetFileName).Distinct(StringComparer.OrdinalIgnoreCase))}");
     }
 
-    /// <summary>Watches the open project's textures folder so saving a .paa from an external editor
-    /// refreshes the preview automatically (debounced to coalesce the burst editors emit on save).</summary>
+    /// <summary>Watches the open addon's PAA files. Events are filtered against the selected entry's
+    /// exact project-texture paths, so unrelated project saves do not rebuild the current model.</summary>
     private void SetupTextureWatcher()
     {
         _texWatcher?.Dispose();
         _texWatcher = null;
-        if (_project is null) return;
+        if (_project is null || _disposed) { UpdateWatchedTexturePaths(null); return; }
         try
         {
-            Directory.CreateDirectory(_project.TexturesDir);
-            var w = new FileSystemWatcher(_project.TexturesDir, "*.paa")
+            Directory.CreateDirectory(_project.AddonDir);
+            var w = new FileSystemWatcher(_project.AddonDir, "*.paa")
             {
-                IncludeSubdirectories = false,
+                IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName | NotifyFilters.Size,
-                EnableRaisingEvents = true,
+                InternalBufferSize = 16 * 1024,
             };
-            void OnChanged(object? _, FileSystemEventArgs __) => OnTextureFileChanged();
+            void OnChanged(object? _, FileSystemEventArgs e) => OnTextureFileChanged(e.FullPath);
             w.Changed += OnChanged;
             w.Created += OnChanged;
-            w.Renamed += (_, __) => OnTextureFileChanged();
+            w.Deleted += OnChanged;
+            w.Renamed += (_, e) =>
+            {
+                OnTextureFileChanged(e.OldFullPath);
+                OnTextureFileChanged(e.FullPath);
+            };
+            w.Error += (_, _) => Application.Current?.Dispatcher.BeginInvoke(new Action(SetupTextureWatcher));
             _texWatcher = w;
+            w.EnableRaisingEvents = true;
         }
-        catch { /* watching is a nicety; ignore if the folder can't be watched */ }
+        catch
+        {
+            _texWatcher?.Dispose();
+            _texWatcher = null;
+            TextureWatchStatus = "Live reload unavailable";
+            return;
+        }
+        UpdateWatchedTexturePaths(SelectedEntry);
     }
 
-    private void OnTextureFileChanged()
+    private void UpdateWatchedTexturePaths(RetexEntry? entry)
     {
-        // Marshal to the UI thread and (re)start the debounce timer; the Tick refreshes the preview.
-        Application.Current?.Dispatcher.Invoke(() => { _texDebounce.Stop(); _texDebounce.Start(); });
+        var paths = new List<string>();
+        if (_project is not null && entry is not null)
+        {
+            string addonRoot = Path.GetFullPath(_project.AddonDir).TrimEnd(Path.DirectorySeparatorChar)
+                + Path.DirectorySeparatorChar;
+            foreach (var selection in entry.Selections)
+            {
+                if (string.IsNullOrWhiteSpace(selection.ProjectTexture)) continue;
+                string fullPath = Path.GetFullPath(Path.Combine(_project.AddonDir, selection.ProjectTexture));
+                if (fullPath.StartsWith(addonRoot, StringComparison.OrdinalIgnoreCase)) paths.Add(fullPath);
+            }
+        }
+
+        lock (_textureWatchGate)
+        {
+            _watchedTexturePaths.Clear();
+            foreach (string path in paths) _watchedTexturePaths.Add(path);
+            _pendingTexturePaths.Clear();
+            _textureWatchVersion++;
+        }
+        int count = paths.Distinct(StringComparer.OrdinalIgnoreCase).Count();
+        TextureWatchStatus = count == 0
+            ? ""
+            : $"Live reload: {count} PAA{(count == 1 ? "" : "s")}";
+    }
+
+    private void OnTextureFileChanged(string path)
+    {
+        if (_disposed) return;
+        string fullPath;
+        try { fullPath = Path.GetFullPath(path); }
+        catch { return; }
+
+        lock (_textureWatchGate)
+        {
+            if (!_watchedTexturePaths.Contains(fullPath)) return;
+            _pendingTexturePaths.Add(fullPath);
+        }
+
+        // Editors commonly emit several write/rename events. Restart one UI-thread timer so only the
+        // completed save rebuilds the previews.
+        Application.Current?.Dispatcher.BeginInvoke(() =>
+        {
+            if (_disposed) return;
+            _texDebounce.Stop();
+            _texDebounce.Start();
+        });
+    }
+
+    private async Task RefreshChangedTexturesAsync()
+    {
+        string[] changed;
+        int watchVersion;
+        lock (_textureWatchGate)
+        {
+            changed = _pendingTexturePaths.Where(_watchedTexturePaths.Contains).ToArray();
+            _pendingTexturePaths.Clear();
+            watchVersion = _textureWatchVersion;
+        }
+        if (changed.Length == 0 || _disposed) return;
+
+        await WaitForStableTextureFilesAsync(changed);
+
+        lock (_textureWatchGate)
+        {
+            if (watchVersion != _textureWatchVersion || _disposed) return;
+            changed = changed.Where(_watchedTexturePaths.Contains).ToArray();
+        }
+        if (changed.Length > 0) await ApplyLiveTextureUpdatesAsync(changed, watchVersion);
+    }
+
+    private async Task ApplyLiveTextureUpdatesAsync(IReadOnlyCollection<string> changedPaths, int watchVersion)
+    {
+        var updates = await Task.Run(() =>
+        {
+            var result = new Dictionary<string, (bool Success, BitmapSource? Bitmap, string Error)>(
+                StringComparer.OrdinalIgnoreCase);
+            foreach (string path in changedPaths.Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!File.Exists(path))
+                {
+                    result[path] = (true, null, "");
+                    continue;
+                }
+                try { result[path] = (true, ImageHelper.ToBitmap(PaaImage.LoadFile(path)), ""); }
+                catch (Exception ex) { result[path] = (false, null, ex.Message); }
+            }
+            return result;
+        });
+
+        lock (_textureWatchGate)
+        {
+            if (watchVersion != _textureWatchVersion || _disposed) return;
+        }
+
+        var applied = new List<string>();
+        var failures = new List<string>();
+        foreach (var (path, update) in updates)
+        {
+            if (!update.Success)
+            {
+                failures.Add($"{Path.GetFileName(path)}: {update.Error}");
+                continue; // keep the last valid image when an editor leaves an invalid intermediate file
+            }
+
+            BitmapSource displayBitmap = update.Bitmap ?? ModelViewHelper.MissingTextureBitmap;
+            if (_cachedTextureBitmaps is not null)
+            {
+                foreach (string key in _cachedTextureBitmaps.Keys.ToArray())
+                {
+                    int separator = key.IndexOf('|');
+                    string cachedPath = separator >= 0 ? key[..separator] : key;
+                    if (cachedPath.Equals(path, StringComparison.OrdinalIgnoreCase))
+                        _cachedTextureBitmaps[key] = update.Bitmap;
+                }
+            }
+
+            // Updating ImageSource invalidates only the material. Geometry, UVs, model groups, camera,
+            // hover mappings, and selection highlights remain exactly as they are.
+            if (!DiagnosticGrid && _cachedTextureBrushes is not null
+                && _cachedTextureBrushes.TryGetValue(path, out var brushes))
+                foreach (var brush in brushes) brush.ImageSource = displayBitmap;
+
+            if (_previewSlots.Count > 0 && _previewIndex >= 0 && _previewIndex < _previewSlots.Count)
+            {
+                var slot = _previewSlots[_previewIndex];
+                if (slot.Kind == PreviewKind.ProjectFile && PathsEqual(slot.Path, path))
+                {
+                    Interlocked.Increment(ref _previewImageLoadVersion); // cancel an older asynchronous load
+                    PreviewImage = update.Bitmap;
+                    PreviewInfo = update.Bitmap is null
+                        ? $"({slot.Label}: texture not found)"
+                        : $"{slot.Label}  {update.Bitmap.PixelWidth}x{update.Bitmap.PixelHeight}  (project, live)";
+                }
+            }
+            applied.Add(path);
+        }
+
+        if (failures.Count > 0)
+            SetStatus($"Live reload kept the previous texture: {string.Join("; ", failures)}", StatusSeverity.Warn);
+        else if (applied.Count > 0)
+            SetStatus($"Live texture updated: {string.Join(", ", applied.Select(Path.GetFileName))}");
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try { return Path.GetFullPath(left).Equals(Path.GetFullPath(right), StringComparison.OrdinalIgnoreCase); }
+        catch { return left.Equals(right, StringComparison.OrdinalIgnoreCase); }
+    }
+
+    private readonly record struct TextureFileState(bool Exists, bool Readable, long Length, long LastWriteTicks);
+
+    private static async Task WaitForStableTextureFilesAsync(IReadOnlyCollection<string> paths)
+    {
+        static TextureFileState State(string path)
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists) return new(false, true, 0, 0);
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                return new(true, stream.Length > 0, stream.Length, info.LastWriteTimeUtc.Ticks);
+            }
+            catch { return new(true, false, -1, -1); }
+        }
+
+        // Atomic-save editors replace the file, while others write it in place. Wait until two
+        // consecutive snapshots agree and every existing file can be opened before decoding.
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            var before = paths.Select(State).ToArray();
+            await Task.Delay(125);
+            var after = paths.Select(State).ToArray();
+            if (before.SequenceEqual(after) && after.All(s => !s.Exists || s.Readable)) return;
+        }
     }
 
     /// <summary>Opens the selected retexture's copied .paa(s) in the OS default editor (GIMP/Photoshop with a PAA plugin).</summary>

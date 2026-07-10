@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -18,6 +19,10 @@ public sealed class BuiltPreview
 {
     public required Model3DGroup Model { get; init; }
     public required IReadOnlyDictionary<GeometryModel3D, OdolPreviewGroup> Parts { get; init; }
+    /// <summary>Brushes keyed by absolute project PAA path. They are mutable on the UI-owned result
+    /// returned by <see cref="ModelViewHelper.ActivateLiveTextures"/>; updating ImageSource then changes
+    /// the rendered texture without rebuilding the model or geometry.</summary>
+    public required IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>> ProjectTextureBrushes { get; init; }
 }
 
 /// <summary>A debug/experimentation transform applied to every texture coordinate before the preview
@@ -134,6 +139,7 @@ public static class ModelViewHelper
 
         var group = new Model3DGroup();
         var parts = new Dictionary<GeometryModel3D, OdolPreviewGroup>();
+        var projectBrushes = new Dictionary<string, List<ImageBrush>>(StringComparer.OrdinalIgnoreCase);
         // Self-contained three-point-ish rig. Ambient kept moderate (dark Arma armour must still read
         // against the dark viewport) but lower than before so the specular highlights + form show; a
         // strong key from the upper front, a soft fill from the opposite side, and a rim/back light to
@@ -160,24 +166,119 @@ public static class ModelViewHelper
             if (normals.Count == mesh.Points.Length) geo.Normals = normals;
             geo.Freeze();
 
-            Material material = BuildMaterial(g.Texture, loadTexture);
+            var (material, liveBrush, livePath) = BuildMaterial(g.Texture, loadTexture);
             var model = new GeometryModel3D(geo, material) { BackMaterial = material };
             model.Freeze();
+            if (liveBrush is not null && livePath is not null)
+            {
+                if (!projectBrushes.TryGetValue(livePath, out var brushes))
+                    projectBrushes[livePath] = brushes = new List<ImageBrush>();
+                brushes.Add(liveBrush);
+            }
             group.Children.Add(model);
             parts[model] = g;
         }
 
         if (parts.Count == 0) return null;
-        return new BuiltPreview { Model = Freeze(group), Parts = parts };
+        return new BuiltPreview
+        {
+            Model = Freeze(group),
+            Parts = parts,
+            ProjectTextureBrushes = projectBrushes.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<ImageBrush>)pair.Value,
+                StringComparer.OrdinalIgnoreCase),
+        };
     }
 
-    private static Material BuildMaterial(PreviewTexture tex, Func<PreviewTexture, BitmapSource?> loadTexture)
+    /// <summary>Creates a UI-thread-owned model that reuses the frozen geometry and lights from a
+    /// background-built preview, but clones project materials so their ImageBrush can be replaced in
+    /// place when a watched PAA changes.</summary>
+    public static BuiltPreview ActivateLiveTextures(Model3DGroup frozenModel,
+        IReadOnlyList<OdolPreviewGroup> groups)
+    {
+        var result = new Model3DGroup();
+        var parts = new Dictionary<GeometryModel3D, OdolPreviewGroup>();
+        var brushesByPath = new Dictionary<string, List<ImageBrush>>(StringComparer.OrdinalIgnoreCase);
+        int groupIndex = 0;
+
+        foreach (var child in frozenModel.Children)
+        {
+            if (child is not GeometryModel3D sourceModel || groupIndex >= groups.Count)
+            {
+                result.Children.Add(child); // frozen lights are safe to share
+                continue;
+            }
+
+            var previewGroup = groups[groupIndex++];
+            string? projectPath = NormalizeProjectPath(previewGroup.Texture.ProjectFilePath);
+            if (projectPath is null)
+            {
+                result.Children.Add(sourceModel);
+                parts[sourceModel] = previewGroup;
+                continue;
+            }
+
+            var material = sourceModel.Material?.CloneCurrentValue();
+            if (material is null)
+            {
+                result.Children.Add(sourceModel);
+                parts[sourceModel] = previewGroup;
+                continue;
+            }
+            var brush = FindImageBrush(material);
+            var liveModel = new GeometryModel3D(sourceModel.Geometry, material) { BackMaterial = material };
+            result.Children.Add(liveModel);
+            parts[liveModel] = previewGroup;
+            if (brush is not null)
+            {
+                if (!brushesByPath.TryGetValue(projectPath, out var list))
+                    brushesByPath[projectPath] = list = new List<ImageBrush>();
+                list.Add(brush);
+            }
+        }
+
+        return new BuiltPreview
+        {
+            Model = result,
+            Parts = parts,
+            ProjectTextureBrushes = brushesByPath.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<ImageBrush>)pair.Value,
+                StringComparer.OrdinalIgnoreCase),
+        };
+    }
+
+    private static ImageBrush? FindImageBrush(Material material)
+    {
+        if (material is DiffuseMaterial { Brush: ImageBrush brush }) return brush;
+        if (material is MaterialGroup group)
+            foreach (var child in group.Children)
+                if (FindImageBrush(child) is { } found) return found;
+        return null;
+    }
+
+    private static string? NormalizeProjectPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        try { return Path.GetFullPath(path); }
+        catch { return path; }
+    }
+
+    private static (Material Material, ImageBrush? LiveBrush, string? LivePath) BuildMaterial(
+        PreviewTexture tex, Func<PreviewTexture, BitmapSource?> loadTexture)
     {
         BitmapSource? bmp = null;
         try { bmp = loadTexture(tex); } catch { /* fall through to a flat colour */ }
-        if (bmp != null)
+        string? projectPath = null;
+        if (!string.IsNullOrWhiteSpace(tex.ProjectFilePath))
         {
-            var brush = new ImageBrush(bmp)
+            try { projectPath = Path.GetFullPath(tex.ProjectFilePath); }
+            catch { projectPath = tex.ProjectFilePath; }
+        }
+        if (bmp != null || projectPath is not null)
+        {
+            var brush = new ImageBrush(bmp ?? MissingTexture)
             {
                 ViewportUnits = BrushMappingMode.RelativeToBoundingBox,
                 TileMode = TileMode.Tile
@@ -188,12 +289,23 @@ public static class ModelViewHelper
             var group = new MaterialGroup();
             group.Children.Add(new DiffuseMaterial(brush));
             group.Children.Add(SharedSpecular);
-            group.Freeze();
-            return group;
+            if (projectPath is null) group.Freeze();
+            return (group, projectPath is null ? null : brush, projectPath);
         }
         // No texture available: a neutral grey so geometry is still visible.
         var solid = new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB0)));
-        return solid;
+        solid.Freeze();
+        return (solid, null, null);
+    }
+
+    private static readonly BitmapSource MissingTexture = CreateMissingTexture();
+    internal static BitmapSource MissingTextureBitmap => MissingTexture;
+    private static BitmapSource CreateMissingTexture()
+    {
+        var bmp = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null,
+            new byte[] { 0xB0, 0xB0, 0xB0, 0xFF }, 4);
+        bmp.Freeze();
+        return bmp;
     }
 
     private static Model3DGroup Freeze(Model3DGroup g) { g.Freeze(); return g; }
