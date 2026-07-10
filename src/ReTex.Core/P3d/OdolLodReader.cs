@@ -24,7 +24,7 @@ namespace ReTex.Core.P3d;
 ///      yet, so ReadFromMinPos takes the MinPos offset as a parameter (found by the caller), or
 ///      seek via StartAddressOfLods[]. <see cref="ReadSkeleton"/> still assumes zero head-counts
 ///      and throws on rigged assets - a loud-failing probe, superseded by ReadFromMinPos.
-///   2. UV dequantization (raw 2x uint16 -> float via UvScale) and 10-bit normal unpacking
+///   2. UV dequantization (raw 2x signed int16 -> float via UvScale) and 10-bit normal unpacking
 ///      (scale -1/511) - both straightforward from the raw arrays now captured.
 ///   3. Multiple UV sets (nUVs > 1) and the optional MinMax/VertProperties/neighbor tail.
 ///
@@ -414,8 +414,10 @@ public static class OdolLodReader
         return sPath.EndsWith(".paa") || sPath.EndsWith(".pac") || sPath.EndsWith(".tga");
     }
 
-    /// <summary>Dequantizes packed UVs (2x uint16 per vertex) to floats using the UVScale
-    /// bounds [minU, minV, maxU, maxV]. Returns empty if the raw array is absent/mismatched.</summary>
+    /// <summary>Dequantizes A2LodUV values (2x signed int16 per vertex) using the UVScale
+    /// bounds [minU, minV, maxU, maxV]. Binarize maps each relative component from [0,1]
+    /// to [-32767,32767], so interpreting the words as unsigned displaces most of the atlas.
+    /// Returns empty if the raw array is absent/mismatched.</summary>
     private static float[][] DequantizeUvs(byte[]? raw, float[]? scale, int n)
     {
         if (raw == null || scale == null || scale.Length < 4 || raw.Length < n * 4) return Array.Empty<float[]>();
@@ -423,9 +425,15 @@ public static class OdolLodReader
         var uv = new float[n][];
         for (int i = 0; i < n; i++)
         {
-            ushort ru = BitConverter.ToUInt16(raw, i * 4);
-            ushort rv = BitConverter.ToUInt16(raw, i * 4 + 2);
-            uv[i] = new[] { minU + (ru / 65535f) * (maxU - minU), minV + (rv / 65535f) * (maxV - minV) };
+            short packedU = BitConverter.ToInt16(raw, i * 4);
+            short packedV = BitConverter.ToInt16(raw, i * 4 + 2);
+            float relativeU = (packedU + 32767f) / 65534f;
+            float relativeV = (packedV + 32767f) / 65534f;
+            uv[i] = new[]
+            {
+                minU + relativeU * (maxU - minU),
+                minV + relativeV * (maxV - minV),
+            };
         }
         return uv;
     }
@@ -824,7 +832,7 @@ public static class OdolLodReader
         public int VertexTableStartOffset;
         public int VertexTableEndOffset;
         public float[]? UvScale;
-        public byte[]? UvRaw;      // count*4 bytes (2x uint16 per vertex, dequantize via UvScale)
+        public byte[]? UvRaw;      // count*4 bytes (2x signed int16 per vertex, dequantize via UvScale)
         public float[]? UvScale2;  // UV set 1 (when nUVs>1)
         public byte[]? UvRaw2;
         public byte[]? NormalRaw;  // count*4 bytes (CompressedXYZTriplet, 10-bit packed, scale -1/511)

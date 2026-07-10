@@ -13,6 +13,10 @@ public sealed class AppSettings
     /// <summary>Manual override for pboc.exe (PBO Manager CLI). Empty = auto-detect.</summary>
     public string PbocPath { get; set; } = "";
 
+    /// <summary>Path to an external model viewer exe (e.g. P3D Analyzer) for the "Open in viewer"
+    /// handoff. Empty = ask the first time.</summary>
+    public string P3dViewerPath { get; set; } = "";
+
     /// <summary>True once the user has gone through Settings at least once (suppresses the automatic first-run prompt).</summary>
     public bool SetupCompleted { get; set; }
 

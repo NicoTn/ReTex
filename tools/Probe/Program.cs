@@ -5,6 +5,80 @@ using ReTex.Core.Projects;
 
 System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 
+// Diagnostic fixture: copy an official MLOD and replace every face-corner UV with values derived
+// from its point position. BI Binarize can then convert it to ODOL so the packed UV codec can be
+// compared against known source values. Probe --patchmloduv <source> <destination>
+if (args.Length >= 3 && args[0] == "--patchmloduv")
+{
+    var d = File.ReadAllBytes(args[1]);
+    if (System.Text.Encoding.ASCII.GetString(d, 0, 4) != "MLOD")
+        throw new InvalidDataException("Source is not an MLOD P3D.");
+
+    int p = 8;
+    int nLods = (int)BitConverter.ToUInt32(d, p); p += 4;
+    int patched = 0;
+    for (int lod = 0; lod < nLods; lod++)
+    {
+        if (System.Text.Encoding.ASCII.GetString(d, p, 4) != "P3DM")
+            throw new InvalidDataException($"LOD {lod} is not P3DM at offset {p}.");
+        p += 12; // signature + major/minor versions
+        int nPoints = (int)BitConverter.ToUInt32(d, p); p += 4;
+        int nNormals = (int)BitConverter.ToUInt32(d, p); p += 4;
+        int nFaces = (int)BitConverter.ToUInt32(d, p); p += 8; // face count + flags
+
+        var points = new float[nPoints][];
+        for (int i = 0; i < nPoints; i++)
+        {
+            points[i] = new[] { BitConverter.ToSingle(d, p), BitConverter.ToSingle(d, p + 4), BitConverter.ToSingle(d, p + 8) };
+            p += 16;
+        }
+        p += nNormals * 12;
+        float minX = points.Min(v => v[0]), maxX = points.Max(v => v[0]);
+        float minZ = points.Min(v => v[2]), maxZ = points.Max(v => v[2]);
+
+        for (int face = 0; face < nFaces; face++)
+        {
+            int faceType = (int)BitConverter.ToUInt32(d, p); p += 4;
+            if (faceType is not (3 or 4)) throw new InvalidDataException($"Bad face type {faceType} at face {face}.");
+            for (int corner = 0; corner < 4; corner++)
+            {
+                int pointIndex = (int)BitConverter.ToUInt32(d, p);
+                p += 8; // point + normal indexes
+                if (corner < faceType && pointIndex >= 0 && pointIndex < points.Length)
+                {
+                    float u = (points[pointIndex][0] - minX) / Math.Max(maxX - minX, 1e-6f);
+                    float v = (points[pointIndex][2] - minZ) / Math.Max(maxZ - minZ, 1e-6f);
+                    BitConverter.GetBytes(u).CopyTo(d, p);
+                    BitConverter.GetBytes(v).CopyTo(d, p + 4);
+                    patched++;
+                }
+                p += 8; // U + V
+            }
+            p += 4; // face flags
+            while (d[p++] != 0) { } // texture
+            while (d[p++] != 0) { } // material
+        }
+
+        if (System.Text.Encoding.ASCII.GetString(d, p, 4) != "TAGG")
+            throw new InvalidDataException($"Missing TAGG marker at offset {p}.");
+        p += 4;
+        while (true)
+        {
+            p++; // active
+            int nameStart = p;
+            while (d[p++] != 0) { }
+            string name = System.Text.Encoding.ASCII.GetString(d, nameStart, p - nameStart - 1);
+            int size = (int)BitConverter.ToUInt32(d, p); p += 4 + size;
+            if (name == "#EndOfFile#") break;
+        }
+        p += 4; // resolution
+    }
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(args[2]))!);
+    File.WriteAllBytes(args[2], d);
+    Console.WriteLine($"Patched {patched} face-corner UVs across {nLods} LODs -> {args[2]}");
+    return 0;
+}
+
 // Quick p3d header probe: Probe --p3d <file>
 if (args.Length >= 2 && args[0] == "--p3d")
 {
@@ -310,7 +384,10 @@ if (args.Length >= 3 && args[0] == "--p3dminpos")
     {
         Console.WriteLine($"  decoded {m.Points?.Length ?? 0} points, uvScale=[{string.Join(",", m.UvScale ?? new float[0])}], VertexTable ends at {m.VertexTableEndOffset} (expected ~{m.VertexTableStartOffset - 4 + m.SizeOfVertexTable})");
         for (int i = 0; i < Math.Min(4, m.Points?.Length ?? 0); i++)
-            Console.WriteLine($"    pt[{i}] ({string.Join(", ", m.Points![i])})");
+        {
+            uint rawUv = m.UvRaw is { Length: >= 4 } ? BitConverter.ToUInt32(m.UvRaw, i * 4) : 0;
+            Console.WriteLine($"    pt[{i}] ({string.Join(", ", m.Points![i])}) rawUV=0x{rawUv:X8} halves=({rawUv & 0xffff},{rawUv >> 16}) float={BitConverter.Int32BitsToSingle((int)rawUv)}");
+        }
     }
     return 0;
 }
@@ -847,6 +924,176 @@ if (args.Length >= 2 && args[0] == "--p3dstrings")
             run = 0;
         }
     }
+    return 0;
+}
+
+// Probe --kneechk <p3d>  : for front-facing faces (normal.z>0.5) in the knee band and the chest band,
+// report whether higher physical-Y correlates with LOWER V (upright, like a correct atlas) or higher V
+// (inverted). This isolates whether the parser gives the knee inverted UVs vs the chest.
+if (args.Length >= 2 && args[0] == "--kneechk")
+{
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(File.ReadAllBytes(args[1]));
+    if (mesh == null) { Console.WriteLine("no visual LOD"); return 0; }
+    double minY = double.MaxValue, maxY = double.MinValue;
+    foreach (var p in mesh.Points) { minY = Math.Min(minY, p[1]); maxY = Math.Max(maxY, p[1]); }
+    double H = maxY - minY;
+    // Correlation of Y vs V over the front faces in a Y-band [lo,hi] (fractions of height from bottom).
+    (int n, double corr, double vmin, double vmax) Band(double lo, double hi)
+    {
+        double yl = minY + H * lo, yh = minY + H * hi;
+        double sy = 0, sv = 0, syy = 0, svv = 0, syv = 0; int n = 0;
+        double vmin = 9, vmax = -9;
+        foreach (var f in mesh.Faces)
+        {
+            var vi = f.VertexTableIndex;
+            // face centroid + average normal
+            double cy = 0, nz = 0; bool ok = true;
+            foreach (var idx in vi)
+            {
+                if (idx >= mesh.Points.Length || (mesh.Normals.Length > idx == false)) { ok = false; break; }
+                cy += mesh.Points[idx][1]; nz += mesh.Normals[idx][2];
+            }
+            if (!ok) continue;
+            cy /= vi.Length; nz /= vi.Length;
+            if (nz < 0.5) continue;                 // front-facing only
+            if (cy < yl || cy > yh) continue;
+            foreach (var idx in vi)
+            {
+                if (idx >= mesh.Uv.Length) continue;
+                double y = mesh.Points[idx][1], v = mesh.Uv[idx][1];
+                sy += y; sv += v; syy += y * y; svv += v * v; syv += y * v; n++;
+                vmin = Math.Min(vmin, v); vmax = Math.Max(vmax, v);
+            }
+        }
+        if (n < 3) return (n, double.NaN, vmin, vmax);
+        double num = n * syv - sy * sv;
+        double den = Math.Sqrt((n * syy - sy * sy) * (n * svv - sv * sv));
+        return (n, den == 0 ? double.NaN : num / den, vmin, vmax);
+    }
+    var chest = Band(0.55, 0.78);
+    var knee  = Band(0.15, 0.30);
+    Console.WriteLine($"height Y=[{minY:f3}..{maxY:f3}]");
+    Console.WriteLine($"CHEST band: n={chest.n} corr(Y,V)={chest.corr:f3} V=[{chest.vmin:f3}..{chest.vmax:f3}]");
+    Console.WriteLine($"KNEE  band: n={knee.n} corr(Y,V)={knee.corr:f3} V=[{knee.vmin:f3}..{knee.vmax:f3}]");
+    Console.WriteLine("corr<0 => higher Y maps to lower V (upright atlas). Opposite signs => knee UVs inverted vs chest.");
+    return 0;
+}
+
+// Probe --p3dproxies <p3d> : locate the LOD address table, then parse the proxy array at each visual
+// LOD start and dump each proxy's name + candidate translation, to verify the LodProxy layout.
+if (args.Length >= 2 && args[0] == "--p3dproxies")
+{
+    var d = File.ReadAllBytes(args[1]);
+    var h = ReTex.Core.P3d.OdolReader.ReadHeader(d);
+    Console.WriteLine($"version={h.Version} lods={h.LodCount} headerEnd={h.HeaderEndOffset} fileLen={d.Length}");
+    Console.WriteLine($"resolutions=[{string.Join(",", h.Resolutions)}]");
+    var tbl = ReTex.Core.P3d.OdolReader.FindLodAddressTable(d);
+    if (tbl is null)
+    {
+        Console.WriteLine("could not find LOD address table — relaxed scan for runs of increasing in-range u32:");
+        // Signature: contiguous LODs mean ends[i]==starts[i+1] and ends[last]==fileLen. Search for it.
+        int n2 = h.LodCount;
+        uint U(int off) => BitConverter.ToUInt32(d, off);
+        int found = 0;
+        for (int at = h.HeaderEndOffset; at + 8 * n2 <= d.Length && found < 6; at++)
+        {
+            bool ok = true;
+            // ends[i]==starts[i+1] (contiguous overlap) — the distinctive signature, no fileLen requirement
+            for (int i = 0; i < n2 - 1 && ok; i++) if (U(at + 4 * (n2 + i)) != U(at + 4 * (i + 1))) ok = false;
+            if (!ok) continue;
+            for (int i = 0; i < n2 - 1 && ok; i++) if (U(at + 4 * i) >= U(at + 4 * (i + 1))) ok = false; // starts increasing
+            if (!ok || U(at) < (uint)h.HeaderEndOffset || U(at + 4 * (2 * n2 - 1)) > (uint)d.Length) continue;
+            var sStarts = Enumerable.Range(0, n2).Select(i => U(at + 4 * i));
+            Console.WriteLine($"  candidate @ {at}: starts=[{string.Join(",", sStarts)}] endLast={U(at + 4 * (2 * n2 - 1))}");
+            found++;
+        }
+        if (found == 0) Console.WriteLine("  no shift-signature table found either.");
+        return 0;
+    }
+    var (starts, ends) = tbl.Value;
+    Console.WriteLine($"version={h.Version} lods={h.LodCount}");
+    for (int i = 0; i < starts.Length; i++)
+        Console.WriteLine($"  LOD{i} res={h.Resolutions[i]} start={starts[i]} end={ends[i]}");
+    foreach (int i in h.VisualLodIndices)
+    {
+        int p = starts[i];
+        uint nProx = BitConverter.ToUInt32(d, p); p += 4;
+        Console.WriteLine($"\n== LOD{i} (res {h.Resolutions[i]}) @ {starts[i]}: nProxies={nProx} ==");
+        if (nProx > 300) { Console.WriteLine("  (implausible — layout/offset off)"); continue; }
+        for (int k = 0; k < nProx && p < d.Length - 64; k++)
+        {
+            int nameStart = p;
+            while (p < d.Length && d[p] != 0) p++;
+            string name = System.Text.Encoding.ASCII.GetString(d, nameStart, p - nameStart); p++;
+            var f = new float[12];
+            for (int j = 0; j < 12; j++) { f[j] = BitConverter.ToSingle(d, p); p += 4; }
+            int seq = BitConverter.ToInt32(d, p); p += 4;
+            int selIdx = BitConverter.ToInt32(d, p); p += 4;
+            int bone = BitConverter.ToInt32(d, p); p += 4;
+            int sect = BitConverter.ToInt32(d, p); p += 4;
+            Console.WriteLine($"  [{k}] '{name}'  T(9-11)=({f[9]:f3},{f[10]:f3},{f[11]:f3})  T(3,7,11)=({f[3]:f3},{f[7]:f3},{f[11]:f3})  seq={seq} sel={selIdx} bone={bone} sect={sect}");
+        }
+    }
+    return 0;
+}
+
+// Probe --proxychk <p3d> : for each proxy: named selection, report how many points it weights and where
+// they sit — tells us whether attachment transforms are recoverable from selection point-weights.
+if (args.Length >= 2 && args[0] == "--proxychk")
+{
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(File.ReadAllBytes(args[1]));
+    if (mesh == null) { Console.WriteLine("no visual LOD"); return 0; }
+    foreach (var ns in mesh.NamedSelections)
+    {
+        if (!ns.Name.StartsWith("proxy:", StringComparison.OrdinalIgnoreCase)) continue;
+        var pts = new List<int>();
+        for (int i = 0; i < ns.PointWeights.Length; i++) if (ns.PointWeights[i] != 0) pts.Add(i);
+        string where = "";
+        if (pts.Count > 0)
+        {
+            double cx = 0, cy = 0, cz = 0;
+            foreach (var i in pts) if (i < mesh.Points.Length) { cx += mesh.Points[i][0]; cy += mesh.Points[i][1]; cz += mesh.Points[i][2]; }
+            where = $" centroid=({cx / pts.Count:f3},{cy / pts.Count:f3},{cz / pts.Count:f3})";
+        }
+        Console.WriteLine($"  {ns.Name}: {pts.Count} weighted pts{where}");
+    }
+    return 0;
+}
+
+// Probe --finduv <p3d> <u> <v> <radius> : find faces whose vertex UVs land near (u,v); print their 3D
+// centroid (to locate them on the body) and per-face Y-vs-V orientation (upright if higher Y -> lower V).
+if (args.Length >= 5 && args[0] == "--finduv")
+{
+    var mesh = ReTex.Core.P3d.OdolLodReader.ReadAnyVisualLod(File.ReadAllBytes(args[1]));
+    if (mesh == null) { Console.WriteLine("no visual LOD"); return 0; }
+    double tu = double.Parse(args[2]), tv = double.Parse(args[3]), rad = double.Parse(args[4]);
+    int hits = 0, upright = 0, inverted = 0;
+    double cx = 0, cy = 0, cz = 0;
+    foreach (var f in mesh.Faces)
+    {
+        var vi = f.VertexTableIndex;
+        bool near = false;
+        foreach (var idx in vi)
+            if (idx < mesh.Uv.Length && Math.Abs(mesh.Uv[idx][0] - tu) < rad && Math.Abs(mesh.Uv[idx][1] - tv) < rad) { near = true; break; }
+        if (!near) continue;
+        // orientation: correlation sign of Y vs V across this face's verts
+        double loY = 1e9, hiY = -1e9, vAtLo = 0, vAtHi = 0;
+        double fx = 0, fy = 0, fz = 0;
+        foreach (var idx in vi)
+        {
+            if (idx >= mesh.Points.Length || idx >= mesh.Uv.Length) continue;
+            double y = mesh.Points[idx][1], v = mesh.Uv[idx][1];
+            fx += mesh.Points[idx][0]; fy += y; fz += mesh.Points[idx][2];
+            if (y < loY) { loY = y; vAtLo = v; }
+            if (y > hiY) { hiY = y; vAtHi = v; }
+        }
+        hits++; cx += fx / vi.Length; cy += fy / vi.Length; cz += fz / vi.Length;
+        if (vAtHi < vAtLo) upright++; else inverted++;
+    }
+    if (hits == 0) { Console.WriteLine("no faces near that UV"); return 0; }
+    Console.WriteLine($"faces near ({tu},{tv}) r={rad}: {hits}");
+    Console.WriteLine($"  avg centroid = ({cx / hits:f3}, {cy / hits:f3}, {cz / hits:f3})  (Y is vertical; higher = up)");
+    Console.WriteLine($"  orientation: upright(hiY->loV)={upright}  inverted(hiY->hiV)={inverted}");
     return 0;
 }
 

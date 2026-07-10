@@ -53,6 +53,213 @@ public partial class MainViewModel : ObservableObject
     /// <summary>Maps each rendered 3D part to a human label (texture + rvmat) for the hover hit-test.
     /// Set by <see cref="LoadPreviewModel"/>; read by the window's MouseMove handler.</summary>
     public IReadOnlyDictionary<GeometryModel3D, string>? PreviewPartLabels { get; private set; }
+
+    // --- 3D preview UV debug transform (flip/rotate/shift the texture live to find the mapping that
+    // matches the in-game look). Not persisted; a diagnostic aid, resets to identity. ---
+    [ObservableProperty] private bool _uvFlipU;
+    [ObservableProperty] private bool _uvFlipV;
+    /// <summary>Rotation in 90° steps (0..3).</summary>
+    [ObservableProperty] private int _uvRot90;
+    [ObservableProperty] private double _uvOffsetU;
+    [ObservableProperty] private double _uvOffsetV;
+    /// <summary>Live readout of the current transform (so it can be reported back / baked in).</summary>
+    [ObservableProperty] private string _uvXformSummary = "identity";
+    // Last args passed to LoadPreviewModel, so the debug controls can rebuild the same model/selections.
+    private string? _lastPreviewModel;
+    private IReadOnlyList<RetexSelection>? _lastPreviewSelections;
+    // Cache of the last fully-loaded preview (parsed mesh + groups + memoised textures) so a UV-debug
+    // tweak only rebuilds the cheap geometry instead of re-extracting/parsing the .p3d and re-decoding
+    // the PAAs. Populated by LoadPreviewModel; consumed by RebuildPreviewFast.
+    private OdolLodMesh? _cachedMesh;
+    private IReadOnlyList<OdolPreviewGroup>? _cachedGroups;
+    private Func<PreviewTexture, BitmapSource?>? _cachedTexLoader;
+    // Diagnostic mode: dress the whole model in a labelled UV coordinate grid so texture placement can be
+    // checked region-by-region against the game. Built lazily on the UI thread; frozen for cross-thread use.
+    [ObservableProperty] private bool _diagnosticGrid;
+    private BitmapSource? _diagGridBmp;
+    private BitmapSource DiagGrid => _diagGridBmp ??= ModelViewHelper.BuildCoordinateGrid(1024, 10);
+    partial void OnDiagnosticGridChanged(bool value) => RebuildPreviewFast();
+    /// <summary>Set by a live UV-debug rebuild so the view keeps the current camera instead of
+    /// re-fitting (ZoomExtents) — the model is the same, only its texture mapping changed.</summary>
+    public bool PreserveCameraOnNextPreview { get; set; }
+    /// <summary>The parsed mesh of the current preview (for the 3D→texture pick tool); null if none.</summary>
+    internal OdolLodMesh? CachedMesh => _cachedMesh;
+    /// <summary>Human-readable result of the last 3D→texture pick (Ctrl+click), e.g. the UV + pixel.</summary>
+    [ObservableProperty] private string _pickInfo = "";
+    /// <summary>A glowing overlay of the faces that sample a spot picked on the 2D texture (reverse
+    /// pick) so the user can see which body part a texture region maps to. Null = nothing highlighted.</summary>
+    [ObservableProperty] private Model3DGroup? _highlightModel3D;
+
+    /// <summary>Reverse pick: highlight, on the 3D model, the geometry that samples texture (u,v).
+    /// Returns true if any faces matched.</summary>
+    public bool HighlightUv(double u, double v)
+    {
+        if (_cachedMesh is null) return false;
+        // Grow the radius until something is hit (sparse regions need a wider net), capped so it stays local.
+        foreach (var r in new[] { 0.012, 0.025, 0.05 })
+        {
+            var hl = ModelViewHelper.BuildUvHighlight(_cachedMesh, u, v, r, CurrentUvXform);
+            if (hl != null) { HighlightModel3D = hl; return true; }
+        }
+        HighlightModel3D = null;
+        return false;
+    }
+
+    partial void OnUvFlipUChanged(bool value) => ApplyUvXform();
+    partial void OnUvFlipVChanged(bool value) => ApplyUvXform();
+    partial void OnUvRot90Changed(int value) => ApplyUvXform();
+    partial void OnUvOffsetUChanged(double value) => ApplyUvXform();
+    partial void OnUvOffsetVChanged(double value) => ApplyUvXform();
+
+    private UvXform CurrentUvXform =>
+        new(UvFlipU, UvFlipV, UvRot90, UvOffsetU, UvOffsetV);
+
+    private void ApplyUvXform()
+    {
+        var x = CurrentUvXform;
+        UvXformSummary = x.IsIdentity ? "identity"
+            : $"rot {UvRot90 * 90}°{(UvFlipU ? " flipU" : "")}{(UvFlipV ? " flipV" : "")} off ({UvOffsetU:+0.00;-0.00;0.00}, {UvOffsetV:+0.00;-0.00;0.00})";
+        if (!_suppressUvRebuild) RebuildPreviewFast();
+    }
+
+    /// <summary>Re-applies the current UV-debug transform to the already-loaded model without touching
+    /// disk: reuses the cached mesh/groups/decoded-textures and only rebuilds geometry (fast enough to
+    /// feel live while dragging a slider). Falls back to a full load if nothing is cached yet.</summary>
+    private void RebuildPreviewFast()
+    {
+        if (_cachedMesh is null || _cachedGroups is null || _cachedTexLoader is null)
+        {
+            _ = LoadPreviewModel(_lastPreviewModel, _lastPreviewSelections);
+            return;
+        }
+        try
+        {
+            var loader = DiagnosticGrid ? (_ => DiagGrid) : _cachedTexLoader;
+            var built = ModelViewHelper.Build(_cachedMesh, _cachedGroups, loader, CurrentUvXform);
+            PreserveCameraOnNextPreview = true;   // same model — don't re-fit the camera on a UV tweak
+            PreviewModel3D = built?.Model;
+            PreviewPartLabels = built?.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, _cachedMesh));
+        }
+        catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
+    }
+
+    /// <summary>Exports the current model's UV layout as a transparent PNG (one colour per texture
+    /// group) so the user can load it as a guide layer over their texture and paint decals onto the
+    /// correct island. Saved next to the project's textures (or temp) and revealed in Explorer.</summary>
+    [RelayCommand]
+    private void ExportUvMap()
+    {
+        if (_cachedMesh is null || _cachedGroups is null)
+        {
+            SetStatus("Load a model in the 3D preview first (select an asset or entry).", StatusSeverity.Warn);
+            return;
+        }
+        try
+        {
+            // Match the texture resolution when known so the guide lines up 1:1 with the atlas.
+            int size = PreviewImage is { PixelWidth: > 0 } bmp ? Math.Clamp(bmp.PixelWidth, 512, 4096) : 2048;
+            var uvMap = ModelViewHelper.RenderUvMap(_cachedMesh, _cachedGroups, size, CurrentUvXform);
+
+            var modelName = Path.GetFileNameWithoutExtension((_lastPreviewModel ?? "model").Replace('\\', '/'));
+            var dir = _project?.TexturesDir is { Length: > 0 } td && Directory.Exists(td)
+                ? td : Path.Combine(Path.GetTempPath(), "ReTex", "uvmaps");
+            Directory.CreateDirectory(dir);
+            var outPath = Path.Combine(dir, $"{modelName}_uvmap.png");
+
+            var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(uvMap));
+            using (var fs = File.Create(outPath)) enc.Save(fs);
+
+            SetStatus($"UV map exported: {outPath} — open it as a layer over your texture to align decals.", StatusSeverity.Info);
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{outPath}\"")); } catch { /* non-fatal */ }
+        }
+        catch (Exception ex) { SetStatus($"UV-map export failed: {ex.Message}", StatusSeverity.Error); }
+    }
+
+    /// <summary>Saves the labelled UV coordinate grid as a PNG. Convert it to .paa and wear it in-game
+    /// (Arsenal), or feed it through "Open in viewer": comparing which grid cell lands on which body part
+    /// in the game vs the preview proves whether the preview's texture placement is faithful.</summary>
+    [RelayCommand]
+    private void ExportDiagnosticGrid()
+    {
+        try
+        {
+            var dir = _project?.TexturesDir is { Length: > 0 } td && Directory.Exists(td)
+                ? td : Path.Combine(Path.GetTempPath(), "ReTex", "uvmaps");
+            Directory.CreateDirectory(dir);
+            var outPath = Path.Combine(dir, "uv_coordinate_grid.png");
+            var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+            enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(DiagGrid));
+            using (var fs = File.Create(outPath)) enc.Save(fs);
+            SetStatus($"UV grid exported: {outPath} — wear it in-game (convert to .paa) and compare which cell lands where vs the preview.", StatusSeverity.Info);
+            try { Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{outPath}\"")); } catch { /* non-fatal */ }
+        }
+        catch (Exception ex) { SetStatus($"UV-grid export failed: {ex.Message}", StatusSeverity.Error); }
+    }
+
+    /// <summary>Extracts the current preview model plus its textures — with the user's retextures
+    /// written at the model's baked texture paths — into a virtual-path mirror under %TEMP%, so an
+    /// external viewer (P3D Analyzer / Object Builder) renders the RETEXTURED model. Returns the
+    /// extracted .p3d path, or null on failure.</summary>
+    public string? ExportModelForViewer()
+    {
+        if (_cachedMesh is null || _cachedGroups is null || string.IsNullOrWhiteSpace(_lastPreviewModel))
+        {
+            SetStatus("Load a model in the 3D preview first.", StatusSeverity.Warn);
+            return null;
+        }
+        var allPbos = Mods.SelectMany(m => m.PboPaths).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        var selPbos = SelectedMod?.PboPaths.ToList() ?? new List<string>();
+        var root = Path.Combine(Path.GetTempPath(), "ReTex", "viewer");
+        try
+        {
+            string? WriteVirtual(string virtualPath, byte[] bytes)
+            {
+                var rel = virtualPath.Replace('/', '\\').TrimStart('\\');
+                var dest = Path.Combine(root, rel);
+                Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                File.WriteAllBytes(dest, bytes);
+                return dest;
+            }
+
+            var modelBytes = ExtractAcrossMods(allPbos, selPbos, _lastPreviewModel!);
+            if (modelBytes is null) { SetStatus("Could not extract the model .p3d.", StatusSeverity.Error); return null; }
+            var modelPath = WriteVirtual(_lastPreviewModel!, modelBytes);
+
+            // Each group's texture, written at the model's baked path. Retextured selections use the
+            // user's painted .paa so the viewer shows the actual retexture.
+            var written = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in _cachedGroups)
+            {
+                var src = g.Texture.SourceVirtualPath;
+                if (string.IsNullOrWhiteSpace(src) || src.StartsWith("#")) continue; // skip procedural colours
+                if (!written.Add(src)) continue;
+                if (g.Texture.ProjectFilePath is { Length: > 0 } proj && File.Exists(proj))
+                    WriteVirtual(src, File.ReadAllBytes(proj));
+                else if (ExtractAcrossMods(allPbos, selPbos, src) is { } tb)
+                    WriteVirtual(src, tb);
+            }
+            // Also drop any remaining textures the model references (normal/spec maps etc.) so it's complete.
+            foreach (var t in _cachedMesh.Textures)
+            {
+                if (string.IsNullOrWhiteSpace(t) || t.StartsWith("#") || !written.Add(t)) continue;
+                if (ExtractAcrossMods(allPbos, selPbos, t) is { } tb) WriteVirtual(t, tb);
+            }
+            return modelPath;
+        }
+        catch (Exception ex) { SetStatus($"Export for viewer failed: {ex.Message}", StatusSeverity.Error); return null; }
+    }
+
+    [RelayCommand] private void UvRotate() => UvRot90 = (UvRot90 + 1) % 4;
+    [RelayCommand] private void UvResetXform()
+    {
+        _suppressUvRebuild = true;
+        UvFlipU = false; UvFlipV = false; UvRot90 = 0; UvOffsetU = UvOffsetV = 0;
+        _suppressUvRebuild = false;
+        ApplyUvXform();
+    }
+    private bool _suppressUvRebuild;
+
     [ObservableProperty] private string _assetSearch = "";
     public ObservableCollection<SelectionChoice> AssetSelections { get; } = new();
     [ObservableProperty] private string _categoryFilter = "All";
@@ -115,7 +322,7 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Sets the status line text and severity in one call.</summary>
-    private void SetStatus(string message, StatusSeverity severity = StatusSeverity.Info)
+    internal void SetStatus(string message, StatusSeverity severity = StatusSeverity.Info)
     {
         Status = message;
         StatusSeverity = severity;
@@ -660,6 +867,11 @@ public partial class MainViewModel : ObservableObject
     /// explanatory message when the model can't be extracted or decoded, leaving the flat tab.</summary>
     private async Task LoadPreviewModel(string? modelVirtualPath, IReadOnlyList<RetexSelection>? selections)
     {
+        _lastPreviewModel = modelVirtualPath;      // remembered so the UV-debug controls can rebuild
+        _lastPreviewSelections = selections;
+        var uvXform = CurrentUvXform;
+        _cachedMesh = null; _cachedGroups = null; _cachedTexLoader = null;   // invalidate live-rebuild cache
+        HighlightModel3D = null; PickInfo = "";                              // clear stale pick/highlight
         PreviewModel3D = null;
         PreviewModelInfo = "";
         HoverTexture = "";
@@ -672,28 +884,47 @@ public partial class MainViewModel : ObservableObject
         var selPbos = SelectedMod?.PboPaths.ToList() ?? new List<string>();
         if (allPbos.Count == 0) { PreviewModelInfo = "(scan a mod folder to preview the model)"; return; }
         string? addonDir = _project?.AddonDir;
+        // Memoising texture loader: decode each PAA once and reuse it, so a later fast rebuild (UV debug)
+        // pays no decode cost. Kept as the cache's loader for RebuildPreviewFast.
+        var texCache = new Dictionary<string, BitmapSource?>();
+        BitmapSource? Loader(PreviewTexture tex)
+        {
+            var key = (tex.ProjectFilePath ?? "") + "|" + tex.SourceVirtualPath;
+            if (!texCache.TryGetValue(key, out var b)) { b = LoadPreviewTexture(tex, allPbos, selPbos); texCache[key] = b; }
+            return b;
+        }
+        // Pre-build the diagnostic grid on the UI thread (RenderTargetBitmap needs STA) so the background
+        // build can just reference the frozen bitmap.
+        bool diagGridOn = DiagnosticGrid;
+        var diagBmp = diagGridOn ? DiagGrid : null;
+        Func<PreviewTexture, BitmapSource?> effectiveLoader = diagGridOn ? (_ => diagBmp) : Loader;
         try
         {
-            var (model, info, labels, summary) = await Task.Run(() =>
+            var (model, info, labels, summary, mesh, groups) = await Task.Run(() =>
             {
                 var bytes = ExtractAcrossMods(allPbos, selPbos, modelVirtualPath!);
-                if (bytes is null) return ((Model3DGroup?)null, "(source model not found — is its mod installed and scanned?)", (IReadOnlyDictionary<GeometryModel3D, string>?)null, "");
-                var mesh = OdolLodReader.ReadAnyVisualLod(bytes);
-                if (mesh is null) return (null, "(3D preview unavailable for this model — its .p3d format/UV layout isn't fully supported yet; use the Texture tab)", null, "");
-                var groups = OdolMeshPreview.BuildGroups(mesh, selections, addonDir);
-                var built = ModelViewHelper.Build(mesh, groups, tex => LoadPreviewTexture(tex, allPbos, selPbos));
+                if (bytes is null) return ((Model3DGroup?)null, "(source model not found — is its mod installed and scanned?)", (IReadOnlyDictionary<GeometryModel3D, string>?)null, "", (OdolLodMesh?)null, (IReadOnlyList<OdolPreviewGroup>?)null);
+                var m = OdolLodReader.ReadAnyVisualLod(bytes);
+                if (m is null) return (null, "(3D preview unavailable for this model — its .p3d format/UV layout isn't fully supported yet; use the Texture tab)", null, "", null, null);
+                var g = OdolMeshPreview.BuildGroups(m, selections, addonDir);
+                var built = ModelViewHelper.Build(m, g, effectiveLoader, uvXform);
                 string name = Path.GetFileName(modelVirtualPath!.Replace('\\', '/'));
-                var infoStr = $"{name}  {mesh.Points.Length} verts · {mesh.Faces.Count} faces · {groups.Count} texture group(s)  ⓘ hover a part";
+                var infoStr = $"{name}  {m.Points.Length} verts · {m.Faces.Count} faces · {g.Count} texture group(s)  ⓘ hover a part";
 
                 // Per-part hover labels + a full groups/materials breakdown for the info tooltip.
-                var lbl = built is null ? null : built.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, mesh));
-                var sum = DescribeModel(mesh, groups);
-                return (built?.Model, infoStr, (IReadOnlyDictionary<GeometryModel3D, string>?)lbl, sum);
+                var lbl = built is null ? null : built.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, m));
+                var sum = DescribeModel(m, g);
+                return (built?.Model, infoStr, (IReadOnlyDictionary<GeometryModel3D, string>?)lbl, sum, m, (IReadOnlyList<OdolPreviewGroup>?)g);
             });
             PreviewModel3D = model;
             PreviewModelInfo = info;
             PreviewPartLabels = labels;
             PreviewGroupsSummary = summary;
+            // Cache for live UV-debug rebuilds (only when a real model loaded).
+            if (mesh is not null && groups is not null && model is not null)
+            {
+                _cachedMesh = mesh; _cachedGroups = groups; _cachedTexLoader = Loader;
+            }
         }
         catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
     }
@@ -1007,32 +1238,39 @@ public partial class MainViewModel : ObservableObject
     }
 
     /// <summary>Duplicates the selected entry (new unique class name, reusing its already-copied
-    /// texture files). Uniform pairs are skipped — their cross-links make a clone non-trivial.</summary>
+    /// texture files). A uniform is a pair (CfgWeapons item + CfgVehicles clothing unit); duplicating
+    /// either half clones BOTH and re-establishes their reciprocal <c>uniformClass</c> cross-links.</summary>
     [RelayCommand]
     private void DuplicateEntry()
     {
         if (_project is null || SelectedEntry is null) { SetStatus("Select a retexture to duplicate.", StatusSeverity.Warn); return; }
         var src = SelectedEntry;
+        PreserveManualEdits(); // so the clone inherits the source entry's current edits
+
+        // Uniform pair: clone both halves and cross-link the clones to each other (not the originals).
         if (src.IsUniform || src.IsUniformUnit)
         {
-            SetStatus("Duplicating uniform pairs isn't supported — retexture the uniform again instead.", StatusSeverity.Warn);
-            return;
+            var partner = _project.Entries.FirstOrDefault(e =>
+                e.NewClassName.Equals(src.PartnerClass, StringComparison.OrdinalIgnoreCase));
+            if (partner is not null)
+            {
+                var cloneA = CloneEntry(src, RetexProjectService.MakeUniqueClassName(_project, src.NewClassName + "_copy"));
+                var cloneB = CloneEntry(partner, RetexProjectService.MakeUniqueClassName(_project, partner.NewClassName + "_copy"));
+                cloneA.PartnerClass = cloneB.NewClassName;
+                cloneB.PartnerClass = cloneA.NewClassName;
+                _project.Entries.Add(cloneA);
+                _project.Entries.Add(cloneB);
+                RetexProjectService.GenerateConfig(_project);
+                RefreshEntries();
+                SelectedEntry = _project.Entries.FirstOrDefault(e => e.NewClassName.Equals(cloneA.NewClassName, StringComparison.Ordinal));
+                ConfigText = File.ReadAllText(_project.ConfigPath);
+                SetStatus($"Duplicated uniform pair → {cloneA.NewClassName} + {cloneB.NewClassName} (shares the same texture files).");
+                return;
+            }
+            // Partner missing (older/edited project): fall through to a single clone.
         }
 
-        PreserveManualEdits(); // so the clone inherits the source entry's current edits
-        var clone = new RetexEntry
-        {
-            SourceClass = src.SourceClass,
-            Category = src.Category,
-            SourceModel = src.SourceModel,
-            SourceAddon = src.SourceAddon,
-            DisplayName = src.DisplayName,
-            NewClassName = RetexProjectService.MakeUniqueClassName(_project, src.NewClassName + "_copy"),
-            CopiedBody = src.CopiedBody,
-            Selections = src.Selections
-                .Select(s => new RetexSelection { Index = s.Index, Name = s.Name, SourceTexture = s.SourceTexture, ProjectTexture = s.ProjectTexture })
-                .ToList(),
-        };
+        var clone = CloneEntry(src, RetexProjectService.MakeUniqueClassName(_project, src.NewClassName + "_copy"));
         _project.Entries.Add(clone);
         RetexProjectService.GenerateConfig(_project);
         RefreshEntries();
@@ -1040,6 +1278,28 @@ public partial class MainViewModel : ObservableObject
         ConfigText = File.ReadAllText(_project.ConfigPath);
         SetStatus($"Duplicated to {clone.NewClassName} (shares the same texture files).");
     }
+
+    /// <summary>Deep-copies a retexture entry (all fields + selections) under a new class name. Copies
+    /// the uniform/unit flags so a cloned pair keeps its roles; <see cref="RetexEntry.PartnerClass"/> is
+    /// left for the caller to set (it must point at the clone's partner, not the original's).</summary>
+    private static RetexEntry CloneEntry(RetexEntry src, string newClassName) => new()
+    {
+        SourceClass = src.SourceClass,
+        Category = src.Category,
+        SourceModel = src.SourceModel,
+        SourceAddon = src.SourceAddon,
+        DisplayName = src.DisplayName,
+        NewClassName = newClassName,
+        CopiedBody = src.CopiedBody,
+        IsUniform = src.IsUniform,
+        IsUniformUnit = src.IsUniformUnit,
+        Selections = src.Selections.Select(s => new RetexSelection
+        {
+            Index = s.Index, Name = s.Name,
+            SourceTexture = s.SourceTexture, ProjectTexture = s.ProjectTexture,
+            SourceMaterial = s.SourceMaterial, ProjectMaterial = s.ProjectMaterial,
+        }).ToList(),
+    };
 
     /// <summary>Folds the config editor's manual edits (displayName, copied stats) back into the
     /// project model so the next regeneration preserves them instead of clobbering.</summary>

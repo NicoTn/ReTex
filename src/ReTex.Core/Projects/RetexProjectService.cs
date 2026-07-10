@@ -33,6 +33,30 @@ public static class RetexProjectService
     {
         Directory.CreateDirectory(proj.TexturesDir);
 
+        // If the user picked a clothing UNIT (a CfgVehicles man — CTR-style mods give these a top-level
+        // `uniformClass`) instead of the wearable uniform ITEM, retarget to the uniform item. Building
+        // from the unit would treat it as a uniform (its top-level uniformClass looks like one) and emit
+        // the pair with REVERSED roles: the real uniform lands under CfgVehicles and never appears in
+        // Arsenal. Retargeting makes "retexture the unit" and "retexture the uniform" both correct.
+        if (asset.Category is not (AssetCategory.Equipment or AssetCategory.Weapon)
+            && asset.SourceClassNode is not null && modAssets is not null)
+        {
+            var itemName = asset.SourceClassNode.StringOr("uniformClass");
+            if (itemName.Length > 0)
+            {
+                var uniformItem = modAssets.FirstOrDefault(a =>
+                    a.ClassName.Equals(itemName, StringComparison.OrdinalIgnoreCase)
+                    && a.Category is AssetCategory.Equipment or AssetCategory.Weapon);
+                if (uniformItem is not null) asset = uniformItem;
+            }
+        }
+
+        // Don't create a second entry for a class already retextured (e.g. "Retexture all listed" hitting
+        // both a uniform and its unit, which now both resolve to the same uniform item).
+        var existingEntry = proj.Entries.FirstOrDefault(e =>
+            e.SourceClass.Equals(asset.ClassName, StringComparison.OrdinalIgnoreCase));
+        if (existingEntry is not null) return existingEntry;
+
         // Build a lookup of source textures already copied into this project so that multiple
         // entries/selections referencing the same source .paa share one file instead of duplicating
         // it. Paths are normalized (lowercase, forward slashes, no leading slash) so variant forms
@@ -66,8 +90,12 @@ public static class RetexProjectService
         // (see ConfigGenerator) and must NOT copy the source body - a copied `class ItemInfo {...}`
         // severs inheritance from the base uniform's ItemInfo (type=801/containerClass/mass), which
         // is exactly what hides the retexture from Arsenal.
+        // A uniform ITEM is a CfgWeapons wearable (Equipment/Weapon) whose ItemInfo names its clothing
+        // unit. Gate on category so a CfgVehicles UNIT (which also carries a top-level uniformClass) is
+        // never mistaken for a uniform item — that mix-up reversed the pair and hid it from Arsenal.
         var uniformUnitName = asset.SourceClassNode is not null ? UniformClassOf(asset.SourceClassNode) : "";
-        bool isUniform = uniformUnitName.Length > 0;
+        bool isUniform = uniformUnitName.Length > 0
+            && asset.Category is AssetCategory.Equipment or AssetCategory.Weapon;
         entry.IsUniform = isUniform;
 
         // Copy the source class's declared values (armor, weapon stats, ItemInfo, HitPoints, ...)

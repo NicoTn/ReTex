@@ -148,6 +148,49 @@ public static class OdolReader
         return mi;
     }
 
+    /// <summary>Locates the <c>StartAddressOfLods[]</c> / <c>EndAddressOfLods[]</c> table (absolute
+    /// file offsets of each LOD) that sits after the Animations block. Rather than parse the fragile
+    /// variable-size Animations block, we scan forward from the end of ModelInfo for two consecutive
+    /// runs of <c>LodCount</c> strictly-increasing, in-range file offsets where the ends line up with
+    /// the starts and the last end ≈ end-of-file. Returns null if not found.</summary>
+    public static (int[] Starts, int[] Ends)? FindLodAddressTable(byte[] d)
+    {
+        var h = ReadHeader(d);
+        // Scan from the end of the header (independent of the version-specific ModelInfo/Animations
+        // parse, which may not be byte-exact on every ODOL version). The address table sits before the
+        // bulky LOD data, so the first match walking forward is the real table.
+        int n = h.LodCount, fileLen = d.Length;
+        for (int at = h.HeaderEndOffset; at + 8 * n <= fileLen; at++)
+            if (TryReadAddrTable(d, at, n, fileLen, out var starts, out var ends))
+                return (starts, ends);
+        return null;
+    }
+
+    private static bool TryReadAddrTable(byte[] d, int at, int n, int fileLen, out int[] starts, out int[] ends)
+    {
+        starts = new int[n]; ends = new int[n];
+        long prev = at;
+        for (int i = 0; i < n; i++)
+        {
+            uint v = BitConverter.ToUInt32(d, at + 4 * i);
+            if (v <= prev || v > fileLen) return false;   // strictly increasing, in-range
+            starts[i] = (int)v; prev = v;
+        }
+        int b2 = at + 4 * n;
+        prev = 0;
+        for (int i = 0; i < n; i++)
+        {
+            uint v = BitConverter.ToUInt32(d, b2 + 4 * i);
+            if (v <= prev || v > fileLen) return false;
+            if (v < starts[i]) return false;                       // end[i] >= start[i]
+            if (i + 1 < n && v > starts[i + 1]) return false;      // end[i] <= start[i+1] (contiguous LODs)
+            ends[i] = (int)v; prev = v;
+        }
+        if (starts[0] < at + 8 * n) return false;        // LODs must come after the table (+ FaceDefaults)
+        if (fileLen - ends[n - 1] > 128) return false;   // last LOD ends ≈ EOF
+        return true;
+    }
+
     private static void Skip(ref int p, int n) => p += n;
     private static float[] ReadVec3(byte[] d, ref int p) => new[] { ReadF32(d, ref p), ReadF32(d, ref p), ReadF32(d, ref p) };
 

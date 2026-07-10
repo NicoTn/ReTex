@@ -204,7 +204,7 @@
                     </Border>
 
                     <!-- Preview: flat texture + 3D model tabs (grows with the window) -->
-                    <TabControl Grid.Row="1" Margin="0,0,0,8" Background="{StaticResource Bg.Panel}"
+                    <TabControl x:Name="PreviewTabs" Grid.Row="1" Margin="0,0,0,8" Background="{StaticResource Bg.Panel}"
                                 BorderBrush="{StaticResource Border.Muted}" BorderThickness="1">
                         <TabItem Header="Texture">
                             <Grid Background="{StaticResource Bg.Panel}">
@@ -217,19 +217,42 @@
                                         MouseMove="TexturePreview_MouseMove"
                                         MouseRightButtonDown="TexturePreview_Reset"
                                         Cursor="SizeAll">
-                                    <Image x:Name="TexturePreviewImage" Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
-                                           RenderOptions.BitmapScalingMode="HighQuality" RenderTransformOrigin="0,0">
-                                        <Image.RenderTransform>
+                                    <!-- Image + pick marker share one transform so the marker stays glued to its
+                                         texel while zooming/panning. Ctrl+click on the 3D model sets the marker. -->
+                                    <Grid RenderTransformOrigin="0,0">
+                                        <Grid.RenderTransform>
                                             <TransformGroup>
                                                 <ScaleTransform x:Name="TextureScale"/>
                                                 <TranslateTransform x:Name="TextureTranslate"/>
                                             </TransformGroup>
-                                        </Image.RenderTransform>
-                                    </Image>
+                                        </Grid.RenderTransform>
+                                        <Image x:Name="TexturePreviewImage" Source="{Binding PreviewImage}" Stretch="Uniform" Margin="4"
+                                               RenderOptions.BitmapScalingMode="HighQuality"/>
+                                        <Canvas x:Name="PickMarkerCanvas" Margin="4" IsHitTestVisible="False">
+                                            <Path x:Name="PickMarker" Visibility="Collapsed" Width="18" Height="18"
+                                                  Stroke="#FF29B6F6" StrokeThickness="1.5" Fill="#5029B6F6">
+                                                <Path.Data>
+                                                    <GeometryGroup>
+                                                        <EllipseGeometry Center="9,9" RadiusX="8" RadiusY="8"/>
+                                                        <LineGeometry StartPoint="9,0" EndPoint="9,18"/>
+                                                        <LineGeometry StartPoint="0,9" EndPoint="18,9"/>
+                                                    </GeometryGroup>
+                                                </Path.Data>
+                                            </Path>
+                                        </Canvas>
+                                    </Grid>
                                 </Border>
                                 <TextBlock Text="{Binding PreviewInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
                                            IsHitTestVisible="False"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"/>
+                                <TextBlock Text="Ctrl+click the texture to find it on the model" Foreground="#FF29B6F6" FontSize="10"
+                                           IsHitTestVisible="False" VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,0,6,4"/>
+                                <!-- Result of a 3D→texture pick (Ctrl+click on the model): the marked spot's UV + pixel. -->
+                                <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="6" Padding="7,4" CornerRadius="3"
+                                        Background="#D0111827" BorderBrush="#FF29B6F6" BorderThickness="1" IsHitTestVisible="False"
+                                        Visibility="{Binding PickInfo, Converter={StaticResource NonEmptyToVisibility}}">
+                                    <TextBlock Text="{Binding PickInfo}" Foreground="{StaticResource Fg.Primary}" FontSize="11"/>
+                                </Border>
 
                                 <!-- Prev / next through the asset's (or retexture's) multiple selection textures -->
                                 <StackPanel Orientation="Horizontal" VerticalAlignment="Bottom" HorizontalAlignment="Center" Margin="0,0,0,6"
@@ -257,10 +280,14 @@
                                                    ShowCoordinateSystem="False" ShowViewCube="True"
                                                    ZoomExtentsWhenLoaded="True" IsHeadLightEnabled="True">
                                     <ModelVisual3D Content="{Binding PreviewModel3D}"/>
+                                    <ModelVisual3D Content="{Binding HighlightModel3D}"/>
                                 </h:HelixViewport3D>
-                                <TextBlock Text="{Binding PreviewModelInfo}" Foreground="{StaticResource Fg.Muted}" FontSize="10"
+                                <TextBlock Foreground="{StaticResource Fg.Muted}" FontSize="10"
                                            VerticalAlignment="Bottom" HorizontalAlignment="Left" Margin="6,0,0,4"
-                                           ToolTip="{Binding PreviewGroupsSummary}"/>
+                                           ToolTip="{Binding PreviewGroupsSummary}">
+                                    <Run Text="{Binding PreviewModelInfo, Mode=OneWay}"/><LineBreak/>
+                                    <Run Text="Ctrl+click a spot to locate it on the texture" Foreground="#FF29B6F6"/>
+                                </TextBlock>
                                 <!-- Hover-to-identify: which texture the part under the cursor uses -->
                                 <Border VerticalAlignment="Top" HorizontalAlignment="Left" Margin="6" Padding="7,4" CornerRadius="3"
                                         Background="#D0111827" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1"
@@ -273,7 +300,43 @@
                                             ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
                                     <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"
                                             ToolTip="Reload the preview after editing the texture externally"/>
+                                    <Button Content="⧉ Open in viewer" Padding="8,2" Margin="6,0,0,0" Click="OpenInViewer_Click"
+                                            ToolTip="Export this model + your textures and open it in an external viewer (e.g. P3D Analyzer) for a game-faithful render. You'll be asked for the viewer's .exe the first time."/>
                                 </StackPanel>
+                                <!-- UV debug: flip/rotate/shift the texture on the preview to find the mapping that
+                                     matches the in-game look. Diagnostic only; does not change the packed mod. -->
+                                <Expander VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="0,0,6,20"
+                                          Header="UV debug" Foreground="{StaticResource Fg.Muted}" FontSize="11"
+                                          ToolTip="Experiment with the texture mapping on the preview. This does NOT affect the packed mod — it only helps diagnose the 3D preview.">
+                                    <Border Background="#E0111827" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1"
+                                            CornerRadius="3" Padding="8">
+                                        <StackPanel Width="230">
+                                            <StackPanel Orientation="Horizontal">
+                                                <CheckBox Content="Flip U" IsChecked="{Binding UvFlipU}" Foreground="{StaticResource Fg.Primary}"/>
+                                                <CheckBox Content="Flip V" IsChecked="{Binding UvFlipV}" Foreground="{StaticResource Fg.Primary}" Margin="14,0,0,0"/>
+                                                <Button Content="Rotate 90°" Command="{Binding UvRotateCommand}" Padding="6,1" Margin="14,0,0,0"/>
+                                            </StackPanel>
+                                            <TextBlock Text="Offset U" Foreground="{StaticResource Fg.Muted}" FontSize="10" Margin="0,8,0,0"/>
+                                            <Slider Minimum="-1" Maximum="1" SmallChange="0.01" LargeChange="0.05" Value="{Binding UvOffsetU}"/>
+                                            <TextBlock Text="Offset V" Foreground="{StaticResource Fg.Muted}" FontSize="10"/>
+                                            <Slider Minimum="-1" Maximum="1" SmallChange="0.01" LargeChange="0.05" Value="{Binding UvOffsetV}"/>
+                                            <Grid Margin="0,6,0,0">
+                                                <TextBlock Text="{Binding UvXformSummary}" Foreground="{StaticResource Fg.Primary}"
+                                                           FontSize="10" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                                <Button Content="Reset" Command="{Binding UvResetXformCommand}" Padding="8,1"
+                                                        HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <Separator Margin="0,8,0,6" Background="{StaticResource Border.Muted}"/>
+                                            <CheckBox Content="Wear UV coordinate grid" IsChecked="{Binding DiagnosticGrid}"
+                                                      Foreground="{StaticResource Fg.Primary}"
+                                                      ToolTip="Dress the model in a labelled u,v grid so you can see exactly which texture coordinate lands on each body part — and compare it against the game to prove placement is faithful."/>
+                                            <Button Content="⊞ Export UV grid (PNG)…" Command="{Binding ExportDiagnosticGridCommand}" Padding="6,3" Margin="0,4,0,0"
+                                                    ToolTip="Save the labelled grid; wear it in-game (Arsenal) or open it in a viewer and compare which cell lands where vs this preview."/>
+                                            <Button Content="⬒ Export UV map…" Command="{Binding ExportUvMapCommand}" Padding="6,3" Margin="0,4,0,0"
+                                                    ToolTip="Save the model's UV layout as a transparent PNG. Open it as a layer over your texture in your image editor to paint decals onto the exact right spot (knee pads, chest, etc.)."/>
+                                        </StackPanel>
+                                    </Border>
+                                </Expander>
                             </Grid>
                         </TabItem>
                     </TabControl>
