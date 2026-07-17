@@ -12,11 +12,37 @@ public enum AssetCategory
     Other,
 }
 
+/// <summary>Arsenal-style browsing group. This is discovery/UI metadata only; generated configs
+/// continue to use <see cref="AssetCategory"/>, so adding these groups does not change projects.</summary>
+public enum AssetSubcategory
+{
+    Other,
+    Uniform,
+    Vest,
+    Headgear,
+    Facewear,
+    Backpack,
+    Rifle,
+    Handgun,
+    Launcher,
+    WeaponAttachment,
+    Car,
+    ArmoredVehicle,
+    Helicopter,
+    Plane,
+    Boat,
+    StaticWeapon,
+    Man,
+    Building,
+    Prop,
+}
+
 /// <summary>A retexturable asset discovered in a mod config: a class with (resolved) hidden selections/textures.</summary>
 public sealed class AssetInfo
 {
     public required string ClassName { get; init; }
     public required AssetCategory Category { get; init; }
+    public AssetSubcategory Subcategory { get; init; } = AssetSubcategory.Other;
     public string Parent { get; init; } = "";
     public string DisplayName { get; init; } = "";
     public string Model { get; init; } = "";
@@ -42,6 +68,14 @@ public sealed class AssetInfo
     public Rap.RapClass? SourceClassNode { get; set; }
 
     public string Label => DisplayName.Length > 0 ? $"{DisplayName}  ({ClassName})" : ClassName;
+
+    public string SubcategoryLabel => Subcategory switch
+    {
+        AssetSubcategory.ArmoredVehicle => "Armored vehicle",
+        AssetSubcategory.StaticWeapon => "Static weapon",
+        AssetSubcategory.WeaponAttachment => "Weapon attachment",
+        _ => Subcategory.ToString(),
+    };
 
     public override string ToString() => Label;
 }

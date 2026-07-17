@@ -9,6 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="BCnEncoder.Net" Version="2.3.0" />
     <PackageReference Include="lzo.net" Version="0.0.6" />
   </ItemGroup>
 

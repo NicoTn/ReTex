@@ -144,6 +144,14 @@ public static class ConfigGenerator
             sb.AppendLine($"        displayName = {Quote(e.DisplayName)};");
         EmitSelectionsAndTextures(sb, e, p);
         sb.AppendLine("        class ItemInfo: ItemInfo {");
+        // Many uniforms (including CTR Gravis) also declare the texture override inside ItemInfo.
+        // If we only override the item's top-level array, this inherited source array can win when
+        // the uniform is equipped and silently restore the original texture on the worn model.
+        var itemTextures = e.Selections.OrderBy(s => s.Index)
+            .Where(s => s.ProjectTexture.Length > 0 || s.SourceTexture.Length > 0).ToList();
+        if (itemTextures.Count > 0)
+            AppendArray(sb, "hiddenSelectionsTextures[]",
+                itemTextures.Select(s => Quote(TextureFor(s, p))), 12);
         if (e.PartnerClass.Length > 0)
             sb.AppendLine($"            uniformClass = {Quote(e.PartnerClass)};");
         sb.AppendLine("        };");

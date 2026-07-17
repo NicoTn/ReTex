@@ -17,6 +17,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Probe", "tools\Probe\Probe.
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PaaDump", "tools\PaaDump\PaaDump.csproj", "{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReTex.Core.Tests", "tests\ReTex.Core.Tests\ReTex.Core.Tests.csproj", "{C0A86F10-17E8-4A52-980A-42AB99B56A11}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "ReTex.App.Tests", "tests\ReTex.App.Tests\ReTex.App.Tests.csproj", "{D7C5F829-6860-4AC2-82AC-C273BD4B503D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -46,6 +50,14 @@ Global
 		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{7891C16F-4D03-4B2E-9BB5-ABFCC0FE427C}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C0A86F10-17E8-4A52-980A-42AB99B56A11}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C0A86F10-17E8-4A52-980A-42AB99B56A11}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C0A86F10-17E8-4A52-980A-42AB99B56A11}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C0A86F10-17E8-4A52-980A-42AB99B56A11}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D7C5F829-6860-4AC2-82AC-C273BD4B503D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D7C5F829-6860-4AC2-82AC-C273BD4B503D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D7C5F829-6860-4AC2-82AC-C273BD4B503D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D7C5F829-6860-4AC2-82AC-C273BD4B503D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{8853D2C9-CD59-4A0B-9E73-15F3D4B9EE86} = {FD1580CD-0280-4AB2-9608-F7DD8F2541C3}

@@ -10,7 +10,7 @@
     <AssemblyName>ReTex</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>4.7.2</Version>
+    <Version>4.19.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

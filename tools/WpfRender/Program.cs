@@ -7,6 +7,8 @@ using System.Windows.Media.Media3D;
 using ReTex.App;
 using ReTex.Core.P3d;
 using ReTex.Core.Paa;
+using ReTex.Core.Paint;
+using ReTex.App.ViewModels;
 
 namespace WpfRender;
 
@@ -18,6 +20,25 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length >= 1 && args[0] == "--paint-latency-smoke")
+        {
+            const int smokeSize = 1024;
+            var document = new PaintDocument("smoke.paa", smokeSize, smokeSize, new byte[smokeSize * smokeSize * 4]);
+            var texture = new PaintTextureViewModel(document, PaaFormat.Dxt1);
+            var history = new PaintHistory();
+            using (var tx = history.Begin("smoke"))
+            {
+                document.Stamp(512, 512, new PaintColor(0, 0, 255), new PaintBrushSettings(16, 1, 1, 1), false, tx);
+                tx.Commit();
+            }
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            texture.Refresh(); timer.Stop();
+            var pixel = new byte[4];
+            texture.Bitmap.CopyPixels(new Int32Rect(512, 512, 1, 1), pixel, 4, 0);
+            if (pixel[2] != 255) { Console.WriteLine("Partial paint upload failed."); return 1; }
+            Console.WriteLine($"1024x1024 partial paint upload: {timer.Elapsed.TotalMilliseconds:0.000} ms");
+            return 0;
+        }
         if (args.Length >= 2 && args[0] == "--window") return RenderWindow(args[1]);
         // WpfRender --uvlayout <p3d> <paa> <out.png>  : draw the model's UV wireframe over the (dimmed)
         // atlas, so which texture region each face samples is directly visible. Answers "where do the
@@ -182,7 +203,9 @@ internal static class Program
             Rot90: args.Contains("--rot90", StringComparer.OrdinalIgnoreCase) ? 1 : 0,
             OffsetU: 0,
             OffsetV: 0);
-        var built = ModelViewHelper.Build(mesh, groups, _ => bmp, uvXform);
+        var built = ModelViewHelper.Build(mesh, groups, _ => bmp, uvXform,
+            renderBackFaces: !args.Contains("--front-only", StringComparer.OrdinalIgnoreCase),
+            reverseWinding: args.Contains("--reverse-winding", StringComparer.OrdinalIgnoreCase));
         if (built is null) { Console.WriteLine("ModelViewHelper.Build returned null"); return 1; }
         if (liveMaterialSmoke)
         {
@@ -281,7 +304,9 @@ internal static class Program
             OffsetU: 0,
             OffsetV: 0);
         var built = ModelViewHelper.Build(mesh, groups, tex =>
-            tex.ProjectFilePath != null && bitmaps.TryGetValue(tex.ProjectFilePath, out var b) ? b : grey, uvXform);
+            tex.ProjectFilePath != null && bitmaps.TryGetValue(tex.ProjectFilePath, out var b) ? b : grey, uvXform,
+            renderBackFaces: !args.Contains("--front-only", StringComparer.OrdinalIgnoreCase),
+            reverseWinding: args.Contains("--reverse-winding", StringComparer.OrdinalIgnoreCase));
         if (built is null) { Console.WriteLine("ModelViewHelper.Build returned null"); return 1; }
 
         foreach (var g in groups)

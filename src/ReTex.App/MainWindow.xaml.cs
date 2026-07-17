@@ -3,7 +3,9 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Media.Media3D;
+using System.Text.RegularExpressions;
 using System.Xml;
 using HelixToolkit.Wpf;
 using ICSharpCode.AvalonEdit.Highlighting;
@@ -14,6 +16,7 @@ namespace ReTex.App;
 
 public partial class MainWindow : Window
 {
+    private PaintWindow? _paintWindow;
     public MainWindow()
     {
         InitializeComponent();
@@ -22,14 +25,38 @@ public partial class MainWindow : Window
         Loaded += (_, _) =>
         {
             var vm = (MainViewModel)DataContext;
+            MessageBox.Show(
+                "This build includes 3D ODOL model decoding.\n\n" +
+                "Use it only with models you own or have explicit permission to inspect. " +
+                "Do not use it to extract, reconstruct, or redistribute another creator's work.",
+                "Authorized models only", MessageBoxButton.OK, MessageBoxImage.Warning);
             vm.CheckFirstRunSetup(this);
             // Re-fit the camera whenever a new 3D model is loaded.
             vm.PropertyChanged += OnViewModelPropertyChanged;
         };
-        Closing += (_, _) =>
+        Closing += (_, e) =>
         {
+            var vm = (MainViewModel)DataContext;
+            if (vm.Paint.IsBusy)
+            {
+                MessageBox.Show("Finish or cancel the current Paint Studio operation before closing ReTex.",
+                    "Paint operation in progress", MessageBoxButton.OK, MessageBoxImage.Information);
+                e.Cancel = true;
+                return;
+            }
+            if (vm.Paint.HasDirty)
+            {
+                var answer = MessageBox.Show("Save painted texture changes before closing?", "Unsaved Paint changes",
+                    MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+                if (answer == MessageBoxResult.Cancel) { e.Cancel = true; return; }
+                if (answer == MessageBoxResult.Yes)
+                {
+                    try { vm.Paint.Save(); }
+                    catch (Exception ex) { MessageBox.Show($"Paint save failed: {ex.Message}", "ReTex", MessageBoxButton.OK, MessageBoxImage.Error); e.Cancel = true; return; }
+                }
+            }
             SaveWindowState();
-            ((MainViewModel)DataContext).Dispose();
+            vm.Dispose();
         };
 
         // Hover-to-identify: name the texture of the model part under the cursor.
@@ -39,6 +66,49 @@ public partial class MainWindow : Window
         Viewport.PreviewMouseLeftButtonDown += Viewport_PickUv;
         // Keep the pick marker glued to its texel when the preview image resizes.
         TexturePreviewImage.SizeChanged += (_, _) => UpdatePickMarker();
+    }
+
+    /// <summary>When the text editor is visible, clicking a project entry navigates to that
+    /// retexture's generated class. Handling the mouse click (rather than only SelectionChanged)
+    /// also makes re-clicking the already-selected entry useful.</summary>
+    private void ProjectEntriesList_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is not MainViewModel { EditorTabIndex: 1 } vm) return;
+
+        var item = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        if (item?.DataContext is not ReTex.Core.Projects.RetexEntry entry) return;
+        if (!ReferenceEquals(vm.SelectedEntry, entry)) vm.SelectedEntry = entry;
+
+        Dispatcher.BeginInvoke(new Action(() => NavigateToConfigClass(entry.NewClassName)),
+            System.Windows.Threading.DispatcherPriority.Background);
+    }
+
+    private void NavigateToConfigClass(string className)
+    {
+        if (string.IsNullOrWhiteSpace(className)) return;
+
+        // Generated entries have a base class (": Base"). Accept a direct body as well for
+        // hand-edited configs, while excluding forward declarations such as "class Foo;".
+        var match = Regex.Match(ConfigEditor.Text,
+            $@"\bclass\s+{Regex.Escape(className)}\s*(?=:\s*[^{{;]+\{{|\{{)",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!match.Success) return;
+
+        ConfigEditor.Select(match.Index, match.Length);
+        var line = ConfigEditor.Document.GetLineByOffset(match.Index).LineNumber;
+        ConfigEditor.ScrollTo(line, 1);
+        ConfigEditor.TextArea.Caret.Offset = match.Index;
+        ConfigEditor.Focus();
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T result) return result;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
     }
 
     // ---- 3D -> texture pick (Ctrl+click): find where the clicked surface samples the atlas ----
@@ -132,6 +202,23 @@ public partial class MainWindow : Window
             // Launch failed (bad exe / it doesn't take a file arg) — reveal the export so they can open it manually.
             vm.SetStatus($"Couldn't launch the viewer ({ex.Message}). Model exported to: {modelPath}", StatusSeverity.Warn);
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", $"/select,\"{modelPath}\"")); } catch { }
+        }
+    }
+
+    private void OpenPaintWindow_Click(object sender, RoutedEventArgs e)
+    {
+        var vm = (MainViewModel)DataContext;
+        if (!vm.Paint.IsAvailable) return;
+        if (_paintWindow is null || !_paintWindow.IsLoaded)
+        {
+            _paintWindow = new PaintWindow(vm) { Owner = this };
+            _paintWindow.Closed += (_, _) => _paintWindow = null;
+            _paintWindow.Show();
+        }
+        else
+        {
+            if (_paintWindow.WindowState == WindowState.Minimized) _paintWindow.WindowState = WindowState.Normal;
+            _paintWindow.Activate();
         }
     }
 

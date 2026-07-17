@@ -12,8 +12,13 @@ public sealed class PaaImage
     public int Width { get; }
     public int Height { get; }
     public byte[] Bgra { get; } // length = Width*Height*4
+    public PaaFormat Format { get; }
+    public PaaMetadata Metadata { get; }
 
-    private PaaImage(int w, int h, byte[] bgra) { Width = w; Height = h; Bgra = bgra; }
+    private PaaImage(int w, int h, byte[] bgra, PaaFormat format, PaaMetadata metadata)
+    {
+        Width = w; Height = h; Bgra = bgra; Format = format; Metadata = metadata;
+    }
 
     private const ushort TypeDxt1 = 0xFF01;
     private const ushort TypeDxt5 = 0xFF05;
@@ -29,11 +34,14 @@ public sealed class PaaImage
         // Parse TAGGs to find the mipmap offset table (OFFS).
         int pos = 2;
         uint[] offsets = Array.Empty<uint>();
-        while (pos + 8 <= d.Length && d[pos] == 'G' && d[pos + 1] == 'G' && d[pos + 2] == 'A' && d[pos + 3] == 'T')
+        var tags = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+        while (pos + 12 <= d.Length && d[pos] == 'G' && d[pos + 1] == 'G' && d[pos + 2] == 'A' && d[pos + 3] == 'T')
         {
             string name = System.Text.Encoding.ASCII.GetString(d, pos + 4, 4); // reversed, e.g. "SFFO"
             int len = BitConverter.ToInt32(d, pos + 8);
             int payload = pos + 12;
+            if (len < 0 || payload + len > d.Length) throw new InvalidDataException("Invalid PAA TAGG length.");
+            tags[name] = d.AsSpan(payload, len).ToArray();
             if (name == "SFFO")
             {
                 offsets = new uint[len / 4];
@@ -79,7 +87,8 @@ public sealed class PaaImage
             if (dxt is null || dxt.Length < expected) continue;
 
             var bgra = type == TypeDxt1 ? DecodeDxt1(dxt, m.w, m.h) : DecodeDxt5(dxt, m.w, m.h);
-            return new PaaImage(m.w, m.h, bgra);
+            var format = type == TypeDxt1 ? PaaFormat.Dxt1 : PaaFormat.Dxt5;
+            return new PaaImage(m.w, m.h, bgra, format, new PaaMetadata(tags));
         }
 
         throw new InvalidDataException("Could not decode any mipmap (LZO unavailable for compressed mips).");

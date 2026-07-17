@@ -24,7 +24,7 @@ public enum StatusSeverity { Info, Warn, Error }
 
 public partial class MainViewModel : ObservableObject, IDisposable
 {
-    private readonly AppSettings _settings = AppSettings.Load();
+    private readonly AppSettings _settings;
 
     [ObservableProperty] private string _workshopPath = "";
     [ObservableProperty] private string _status = "Pick a mod and scan.";
@@ -54,6 +54,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     /// <summary>Maps each rendered 3D part to a human label (texture + rvmat) for the hover hit-test.
     /// Set by <see cref="LoadPreviewModel"/>; read by the window's MouseMove handler.</summary>
     public IReadOnlyDictionary<GeometryModel3D, string>? PreviewPartLabels { get; private set; }
+    internal IReadOnlyDictionary<GeometryModel3D, OdolPreviewGroup>? PreviewPaintParts { get; private set; }
+    public PaintSessionViewModel Paint { get; }
 
     // --- 3D preview UV debug transform (flip/rotate/shift the texture live to find the mapping that
     // matches the in-game look). Not persisted; a diagnostic aid, resets to identity. ---
@@ -76,13 +78,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private Func<PreviewTexture, BitmapSource?>? _cachedTexLoader;
     private Dictionary<string, BitmapSource?>? _cachedTextureBitmaps;
     private IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>>? _cachedTextureBrushes;
+    private IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>>? _cachedSelectionBrushes;
     private int _previewModelLoadVersion;
     // Diagnostic mode: dress the whole model in a labelled UV coordinate grid so texture placement can be
     // checked region-by-region against the game. Built lazily on the UI thread; frozen for cross-thread use.
     [ObservableProperty] private bool _diagnosticGrid;
+    [ObservableProperty] private bool _renderBackFaces = true;
     private BitmapSource? _diagGridBmp;
     private BitmapSource DiagGrid => _diagGridBmp ??= ModelViewHelper.BuildCoordinateGrid(1024, 10);
     partial void OnDiagnosticGridChanged(bool value) => RebuildPreviewFast();
+    partial void OnRenderBackFacesChanged(bool value) => RebuildPreviewFast();
     /// <summary>Set by a live UV-debug rebuild so the view keeps the current camera instead of
     /// re-fitting (ZoomExtents) — the model is the same, only its texture mapping changed.</summary>
     public bool PreserveCameraOnNextPreview { get; set; }
@@ -139,12 +144,16 @@ public partial class MainViewModel : ObservableObject, IDisposable
         try
         {
             var loader = DiagnosticGrid ? (_ => DiagGrid) : _cachedTexLoader;
-            var frozen = ModelViewHelper.Build(_cachedMesh, _cachedGroups, loader, CurrentUvXform);
+            var frozen = ModelViewHelper.Build(_cachedMesh, _cachedGroups, loader, CurrentUvXform,
+                renderBackFaces: RenderBackFaces);
             var built = frozen is null ? null : ModelViewHelper.ActivateLiveTextures(frozen.Model, _cachedGroups);
             PreserveCameraOnNextPreview = true;   // same model — don't re-fit the camera on a UV tweak
             PreviewModel3D = built?.Model;
             PreviewPartLabels = built?.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, _cachedMesh));
+            PreviewPaintParts = built?.Parts;
             _cachedTextureBrushes = built?.ProjectTextureBrushes;
+            _cachedSelectionBrushes = built?.SelectionOverlayBrushes;
+            Paint.BindToPreview();
         }
         catch (Exception ex) { PreviewModelInfo = $"(3D preview failed: {ex.Message})"; }
     }
@@ -270,6 +279,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<SelectionChoice> AssetSelections { get; } = new();
     [ObservableProperty] private string _categoryFilter = "All";
     public string[] Categories { get; } = { "All", "Equipment", "Weapon", "Vehicle", "Unit", "Prop", "Backpack", "Glasses" };
+    [ObservableProperty] private string _subcategoryFilter = "All";
+    public ObservableCollection<string> Subcategories { get; } = new() { "All" };
 
     private const string AllPbos = "All PBOs";
     public ObservableCollection<string> PboNames { get; } = new() { AllPbos };
@@ -317,12 +328,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
     private readonly object _textureWatchGate = new();
     private readonly HashSet<string> _watchedTexturePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _pendingTexturePaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, DateTime> _suppressedTexturePaths = new(StringComparer.OrdinalIgnoreCase);
     private int _textureWatchVersion;
     private bool _disposed;
     [ObservableProperty] private string _textureWatchStatus = "";
 
-    public MainViewModel()
+    public MainViewModel() : this(AppSettings.Load(), persistSettings: true, scanOnStart: true)
     {
+    }
+
+    internal MainViewModel(AppSettings settings, bool persistSettings, bool scanOnStart)
+    {
+        _settings = settings;
+        Paint = new PaintSessionViewModel(this, persistSettings ? settings.Save : null);
         WorkshopPath = _settings.WorkshopPath;
         ProjectsRoot = _settings.ProjectsRoot;
         LoadRecents();
@@ -335,7 +353,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         };
         _prevEditorTab = Math.Clamp(_settings.LastEditorTab, 0, 1);
         EditorTabIndex = _prevEditorTab;
-        if (Directory.Exists(WorkshopPath)) ScanWorkshop();
+        if (scanOnStart && Directory.Exists(WorkshopPath)) ScanWorkshop();
     }
 
     public void Dispose()
@@ -345,6 +363,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         _texDebounce.Stop();
         _texWatcher?.Dispose();
         _texWatcher = null;
+        Paint.Dispose();
     }
 
     /// <summary>Sets the status line text and severity in one call.</summary>
@@ -463,12 +482,18 @@ public partial class MainViewModel : ObservableObject, IDisposable
             PboNames.Add(name);
         PboFilter = AllPbos;
 
+        RebuildSubcategories();
         ApplyAssetFilter();
         SetStatus($"{mod.DisplayName}: {_allAssets.Count} retexturable assets in {PboNames.Count - 1} PBOs");
     }
 
     partial void OnAssetSearchChanged(string value) => ApplyAssetFilter();
-    partial void OnCategoryFilterChanged(string value) => ApplyAssetFilter();
+    partial void OnCategoryFilterChanged(string value)
+    {
+        RebuildSubcategories();
+        ApplyAssetFilter();
+    }
+    partial void OnSubcategoryFilterChanged(string value) => ApplyAssetFilter();
     partial void OnPboFilterChanged(string value) => ApplyAssetFilter();
 
     partial void OnSelectedAssetChanged(AssetInfo? value)
@@ -576,6 +601,9 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (CategoryFilter != "All" && Enum.TryParse<AssetCategory>(CategoryFilter, out var cat))
             view = view.Where(a => a.Category == cat);
 
+        if (SubcategoryFilter != "All")
+            view = view.Where(a => a.SubcategoryLabel.Equals(SubcategoryFilter, StringComparison.OrdinalIgnoreCase));
+
         if (PboFilter != AllPbos)
             view = view.Where(a => Path.GetFileName(a.SourcePbo).Equals(PboFilter, StringComparison.OrdinalIgnoreCase));
 
@@ -585,6 +613,22 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         foreach (var a in view.OrderBy(a => a.Category).ThenBy(a => a.Label, StringComparer.OrdinalIgnoreCase))
             Assets.Add(a);
+    }
+
+    private void RebuildSubcategories()
+    {
+        var labels = _allAssets
+            .Where(a => CategoryFilter == "All" || a.Category.ToString() == CategoryFilter)
+            .Select(a => a.SubcategoryLabel)
+            .Where(s => s != nameof(AssetSubcategory.Other))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(s => s, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        Subcategories.Clear();
+        Subcategories.Add("All");
+        foreach (var label in labels) Subcategories.Add(label);
+        SubcategoryFilter = "All";
     }
 
     // ---------------------------------------------------------------- projects
@@ -728,6 +772,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         RenameText = value?.NewClassName ?? "";
         RebuildEntryForm(value);
         UpdateWatchedTexturePaths(value);
+        Paint.Load(_project, value);
         if (_project is null || value is null) { _previewSlots = new(); _ = ShowPreviewSlot(0); return; }
         // One previewable slot per selection: the retextured project .paa when present, else the source
         // texture. The prev/next arrows then cycle through every selection of this retexture.
@@ -916,6 +961,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
         HoverTexture = "";
         PreviewGroupsSummary = "";
         PreviewPartLabels = null;
+        PreviewPaintParts = null;
         if (string.IsNullOrWhiteSpace(modelVirtualPath)) { PreviewModelInfo = "(no source model for this asset)"; return; }
 
         // Snapshot PBO paths on the UI thread (Mods is an ObservableCollection - not thread-safe).
@@ -946,7 +992,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 var m = OdolLodReader.ReadAnyVisualLod(bytes);
                 if (m is null) return (null, "(3D preview unavailable for this model — its .p3d format/UV layout isn't fully supported yet; use the Texture tab)", null, "", null, null);
                 var g = OdolMeshPreview.BuildGroups(m, selections, addonDir);
-                var built = ModelViewHelper.Build(m, g, effectiveLoader, uvXform);
+                var built = ModelViewHelper.Build(m, g, effectiveLoader, uvXform,
+                    renderBackFaces: RenderBackFaces);
                 string name = Path.GetFileName(modelVirtualPath!.Replace('\\', '/'));
                 var infoStr = $"{name}  {m.Points.Length} verts · {m.Faces.Count} faces · {g.Count} texture group(s)  ⓘ hover a part";
 
@@ -962,6 +1009,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
                 model = live.Model;
                 labels = live.Parts.ToDictionary(kv => kv.Key, kv => DescribePart(kv.Value.Texture, mesh!));
                 _cachedTextureBrushes = live.ProjectTextureBrushes;
+                _cachedSelectionBrushes = live.SelectionOverlayBrushes;
+                PreviewPaintParts = live.Parts;
             }
             if (preserveCamera) PreserveCameraOnNextPreview = true;
             PreviewModel3D = model;
@@ -973,12 +1022,58 @@ public partial class MainViewModel : ObservableObject, IDisposable
             {
                 _cachedMesh = mesh; _cachedGroups = groups; _cachedTexLoader = Loader;
                 _cachedTextureBitmaps = texCache;
+                Paint.BindToPreview();
             }
         }
         catch (Exception ex)
         {
             if (loadVersion == _previewModelLoadVersion)
                 PreviewModelInfo = $"(3D preview failed: {ex.Message})";
+        }
+    }
+
+    internal void BindPaintBitmap(string path, BitmapSource bitmap)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); } catch { full = path; }
+        if (_cachedTextureBrushes is not null && _cachedTextureBrushes.TryGetValue(full, out var brushes))
+            foreach (var brush in brushes)
+                if (!ReferenceEquals(brush.ImageSource, bitmap)) brush.ImageSource = bitmap;
+        if (_previewSlots.Count > 0 && _previewIndex >= 0 && _previewIndex < _previewSlots.Count)
+        {
+            var slot = _previewSlots[_previewIndex];
+            if (slot.Kind == PreviewKind.ProjectFile && PathsEqual(slot.Path, full)) PreviewImage = bitmap;
+        }
+    }
+
+    internal void BindPaintSelectionBitmap(string path, BitmapSource bitmap)
+    {
+        string full;
+        try { full = Path.GetFullPath(path); } catch { full = path; }
+        if (_cachedSelectionBrushes is not null && _cachedSelectionBrushes.TryGetValue(full, out var brushes))
+            foreach (var brush in brushes)
+                if (!ReferenceEquals(brush.ImageSource, bitmap)) brush.ImageSource = bitmap;
+    }
+
+    internal void NotifyPaintSaved(IEnumerable<string> paths)
+    {
+        string[] saved = paths.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        PreparePaintSave(saved);
+        SetStatus($"Paint saved: {string.Join(", ", saved.Select(Path.GetFileName))}");
+    }
+
+    internal void PreparePaintSave(IEnumerable<string> paths)
+    {
+        lock (_textureWatchGate)
+        {
+            DateTime until = DateTime.UtcNow.AddSeconds(3);
+            foreach (string path in paths)
+            {
+                string full;
+                try { full = Path.GetFullPath(path); } catch { full = path; }
+                _suppressedTexturePaths[full] = until;
+                _pendingTexturePaths.Remove(full);
+            }
         }
     }
 
@@ -1260,6 +1355,11 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         lock (_textureWatchGate)
         {
+            DateTime now = DateTime.UtcNow;
+            foreach (string expired in _suppressedTexturePaths.Where(pair => pair.Value <= now)
+                .Select(pair => pair.Key).ToArray())
+                _suppressedTexturePaths.Remove(expired);
+            if (_suppressedTexturePaths.TryGetValue(fullPath, out DateTime until) && until > now) return;
             if (!_watchedTexturePaths.Contains(fullPath)) return;
             _pendingTexturePaths.Add(fullPath);
         }
@@ -1591,13 +1691,10 @@ public partial class MainViewModel : ObservableObject, IDisposable
             return;
 
         PreserveManualEdits();
-        int merged = RetexProjectService.ConsolidateTextures(_project); // count for the status line
-        RetexProjectService.GenerateConfig(_project);                   // (also consolidates; idempotent)
+        RetexProjectService.GenerateConfig(_project);
         RefreshEntries();
         ConfigText = File.ReadAllText(_project.ConfigPath);
-        SetStatus(merged > 0
-            ? $"Regenerated config; merged {merged} duplicate texture file(s) into shared copies."
-            : "Regenerated config from project entries (manual edits overwritten).");
+        SetStatus("Regenerated config from project entries (manual edits overwritten).");
         WarnIfMissingTextures(_project);
     }
 

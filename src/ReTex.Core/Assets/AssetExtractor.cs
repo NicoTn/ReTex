@@ -52,10 +52,12 @@ public static class AssetExtractor
             var scope = ResolveInt(c, index, "scope", 2);
             if (scope <= 0) continue;
 
+            var category = classify(c, index);
             outList.Add(new AssetInfo
             {
                 ClassName = c.Name,
-                Category = classify(c, index),
+                Category = category,
+                Subcategory = ClassifySubcategory(c, index, category),
                 Parent = c.Parent,
                 DisplayName = ResolveString(c, index, "displayName"),
                 Model = ResolveString(c, index, "model"),
@@ -163,6 +165,73 @@ public static class AssetExtractor
             return AssetCategory.Unit;
 
         return AssetCategory.Prop;
+    }
+
+    /// <summary>Assigns an ACE/Arsenal-style browsing group using config values first and class
+    /// ancestry/name hints as a fallback for mods whose base classes live outside the scanned PBOs.</summary>
+    public static AssetSubcategory ClassifySubcategory(RapClass c, Dictionary<string, RapClass> index, AssetCategory category)
+    {
+        if (category == AssetCategory.Glasses) return AssetSubcategory.Facewear;
+        if (category == AssetCategory.Backpack) return AssetSubcategory.Backpack;
+        if (category == AssetCategory.Unit) return AssetSubcategory.Man;
+
+        var chain = string.Join("|", ChainNames(c, index)).ToLowerInvariant();
+        int itemType = ResolveNestedInt(c, index, "ItemInfo", "type", -1);
+        int weaponType = ResolveInt(c, index, "type", -1);
+
+        if (category == AssetCategory.Equipment)
+        {
+            if (ResolveNestedString(c, index, "ItemInfo", "uniformClass").Length > 0
+                || itemType == 801 || chain.Contains("uniform")) return AssetSubcategory.Uniform;
+            if (itemType == 701 || chain.Contains("vest") || chain.Contains("platecarrier")) return AssetSubcategory.Vest;
+            if (itemType == 605 || chain.Contains("helmet") || chain.Contains("headgear")) return AssetSubcategory.Headgear;
+            // Arsenal attachment item types: muzzle, optic, pointer and bipod.
+            if (itemType is 101 or 201 or 301 or 302) return AssetSubcategory.WeaponAttachment;
+            return AssetSubcategory.Other;
+        }
+
+        if (category == AssetCategory.Weapon)
+        {
+            if (weaponType == 2 || chain.Contains("pistol") || chain.Contains("handgun")) return AssetSubcategory.Handgun;
+            if (weaponType == 4 || chain.Contains("launcher")) return AssetSubcategory.Launcher;
+            if (itemType is 101 or 201 or 301 or 302 || chain.Contains("optic") || chain.Contains("muzzle")
+                || chain.Contains("acc_")) return AssetSubcategory.WeaponAttachment;
+            return AssetSubcategory.Rifle;
+        }
+
+        if (category == AssetCategory.Vehicle)
+        {
+            if (chain.Contains("helicopter") || chain.Contains("heli_")) return AssetSubcategory.Helicopter;
+            if (chain.Contains("plane") || chain.Contains("airplane")) return AssetSubcategory.Plane;
+            if (chain.Contains("ship") || chain.Contains("boat") || chain.Contains("submarine")) return AssetSubcategory.Boat;
+            if (chain.Contains("staticweapon") || chain.Contains("static_")) return AssetSubcategory.StaticWeapon;
+            if (chain.Contains("tank") || chain.Contains("apc") || chain.Contains("wheeled_apc")) return AssetSubcategory.ArmoredVehicle;
+            return AssetSubcategory.Car;
+        }
+
+        if (category == AssetCategory.Prop)
+            return chain.Contains("house") || chain.Contains("building") ? AssetSubcategory.Building : AssetSubcategory.Prop;
+
+        return AssetSubcategory.Other;
+    }
+
+    private static string ResolveNestedString(RapClass c, Dictionary<string, RapClass> index, string nestedClass, string key)
+    {
+        int guard = 256;
+        for (var cur = c; cur is not null && guard-- > 0; cur = Parent(cur, index))
+        {
+            var s = cur.Class(nestedClass)?.Value(key)?.AsString();
+            if (!string.IsNullOrEmpty(s)) return s;
+        }
+        return "";
+    }
+
+    private static int ResolveNestedInt(RapClass c, Dictionary<string, RapClass> index, string nestedClass, string key, int fallback)
+    {
+        int guard = 256;
+        for (var cur = c; cur is not null && guard-- > 0; cur = Parent(cur, index))
+            if (cur.Class(nestedClass)?.Value(key)?.Raw is long l) return (int)l;
+        return fallback;
     }
 
     private static List<string> ChainNames(RapClass c, Dictionary<string, RapClass> index)

@@ -42,6 +42,28 @@ public sealed class AppSettings
     /// <summary>Last-used bottom-right editor tab (0 = form editor, 1 = config.cpp), so the app reopens on it.</summary>
     public int LastEditorTab { get; set; }
 
+    // --- Paint Studio layout and tool state ---
+    public double PaintWindowWidth { get; set; }
+    public double PaintWindowHeight { get; set; }
+    public double PaintWindowLeft { get; set; } = double.NaN;
+    public double PaintWindowTop { get; set; } = double.NaN;
+    public bool PaintWindowMaximized { get; set; }
+    public string PaintLayout { get; set; } = "Split";
+    public string PaintTool { get; set; } = "Brush";
+    public double PaintBrushSize { get; set; } = 32;
+    public double PaintHardness { get; set; } = 0.75;
+    public double PaintOpacity { get; set; } = 1;
+    public double PaintFlow { get; set; } = 1;
+    public double PaintSpacing { get; set; } = 0.2;
+    public double PaintTolerance { get; set; } = 0.12;
+    public double PaintTintStrength { get; set; } = 0.8;
+    public double PaintCameraMoveSpeed { get; set; } = 1;
+    public bool PaintGlobalMatch { get; set; }
+    public string PaintColorHex { get; set; } = "#E53935";
+    public string PaintBackgroundColorHex { get; set; } = "#FFFFFF";
+    public List<string> PaintRecentColors { get; set; } = new();
+    public List<PaintBrushPresetSettings> PaintBrushPresets { get; set; } = new();
+
     private const int MaxRecent = 8;
 
     /// <summary>Pushes a project file to the top of the MRU list (de-duplicated, capped).</summary>
@@ -80,4 +102,14 @@ public sealed class AppSettings
         }
         catch { /* non-fatal */ }
     }
+}
+
+public sealed class PaintBrushPresetSettings
+{
+    public string Name { get; set; } = "";
+    public double Size { get; set; } = 32;
+    public double Hardness { get; set; } = 0.75;
+    public double Opacity { get; set; } = 1;
+    public double Flow { get; set; } = 1;
+    public double Spacing { get; set; } = 0.2;
 }

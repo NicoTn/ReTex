@@ -23,6 +23,9 @@ public sealed class BuiltPreview
     /// returned by <see cref="ModelViewHelper.ActivateLiveTextures"/>; updating ImageSource then changes
     /// the rendered texture without rebuilding the model or geometry.</summary>
     public required IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>> ProjectTextureBrushes { get; init; }
+    /// <summary>Transparent diffuse layers keyed by project PAA path. Paint Studio updates these with
+    /// selection masks so selected UV regions are visible on the model without changing texture pixels.</summary>
+    public required IReadOnlyDictionary<string, IReadOnlyList<ImageBrush>> SelectionOverlayBrushes { get; init; }
 }
 
 /// <summary>A debug/experimentation transform applied to every texture coordinate before the preview
@@ -112,7 +115,8 @@ public static class ModelViewHelper
     /// stays free of the extraction/PAA pipeline. Returns null if the mesh has no usable geometry.
     /// </summary>
     public static BuiltPreview? Build(OdolLodMesh mesh, IReadOnlyList<OdolPreviewGroup> groups,
-        Func<PreviewTexture, BitmapSource?> loadTexture, UvXform uv = default)
+        Func<PreviewTexture, BitmapSource?> loadTexture, UvXform uv = default, bool renderBackFaces = true,
+        bool reverseWinding = false)
     {
         if (mesh.Points.Length == 0 || groups.Count == 0) return null;
 
@@ -155,8 +159,16 @@ public static class ModelViewHelper
             foreach (int fi in g.FaceIndices)
             {
                 var v = mesh.Faces[fi].VertexTableIndex;
-                if (v.Length >= 3) { indices.Add(v[0]); indices.Add(v[1]); indices.Add(v[2]); }
-                if (v.Length == 4) { indices.Add(v[0]); indices.Add(v[2]); indices.Add(v[3]); }
+                if (!reverseWinding)
+                {
+                    if (v.Length >= 3) { indices.Add(v[0]); indices.Add(v[1]); indices.Add(v[2]); }
+                    if (v.Length == 4) { indices.Add(v[0]); indices.Add(v[2]); indices.Add(v[3]); }
+                }
+                else
+                {
+                    if (v.Length >= 3) { indices.Add(v[0]); indices.Add(v[2]); indices.Add(v[1]); }
+                    if (v.Length == 4) { indices.Add(v[0]); indices.Add(v[3]); indices.Add(v[2]); }
+                }
             }
             if (indices.Count == 0) continue;
             indices.Freeze();
@@ -167,7 +179,10 @@ public static class ModelViewHelper
             geo.Freeze();
 
             var (material, liveBrush, livePath) = BuildMaterial(g.Texture, loadTexture);
-            var model = new GeometryModel3D(geo, material) { BackMaterial = material };
+            var model = new GeometryModel3D(geo, material)
+            {
+                BackMaterial = renderBackFaces ? material : null,
+            };
             model.Freeze();
             if (liveBrush is not null && livePath is not null)
             {
@@ -188,6 +203,7 @@ public static class ModelViewHelper
                 pair => pair.Key,
                 pair => (IReadOnlyList<ImageBrush>)pair.Value,
                 StringComparer.OrdinalIgnoreCase),
+            SelectionOverlayBrushes = new Dictionary<string, IReadOnlyList<ImageBrush>>(StringComparer.OrdinalIgnoreCase),
         };
     }
 
@@ -200,6 +216,7 @@ public static class ModelViewHelper
         var result = new Model3DGroup();
         var parts = new Dictionary<GeometryModel3D, OdolPreviewGroup>();
         var brushesByPath = new Dictionary<string, List<ImageBrush>>(StringComparer.OrdinalIgnoreCase);
+        var selectionBrushesByPath = new Dictionary<string, List<ImageBrush>>(StringComparer.OrdinalIgnoreCase);
         int groupIndex = 0;
 
         foreach (var child in frozenModel.Children)
@@ -227,7 +244,11 @@ public static class ModelViewHelper
                 continue;
             }
             var brush = FindImageBrush(material);
-            var liveModel = new GeometryModel3D(sourceModel.Geometry, material) { BackMaterial = material };
+            (material, ImageBrush selectionBrush) = AddSelectionOverlay(material);
+            var liveModel = new GeometryModel3D(sourceModel.Geometry, material)
+            {
+                BackMaterial = sourceModel.BackMaterial is null ? null : material,
+            };
             result.Children.Add(liveModel);
             parts[liveModel] = previewGroup;
             if (brush is not null)
@@ -236,6 +257,9 @@ public static class ModelViewHelper
                     brushesByPath[projectPath] = list = new List<ImageBrush>();
                 list.Add(brush);
             }
+            if (!selectionBrushesByPath.TryGetValue(projectPath, out var selectionList))
+                selectionBrushesByPath[projectPath] = selectionList = new List<ImageBrush>();
+            selectionList.Add(selectionBrush);
         }
 
         return new BuiltPreview
@@ -246,7 +270,32 @@ public static class ModelViewHelper
                 pair => pair.Key,
                 pair => (IReadOnlyList<ImageBrush>)pair.Value,
                 StringComparer.OrdinalIgnoreCase),
+            SelectionOverlayBrushes = selectionBrushesByPath.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<ImageBrush>)pair.Value,
+                StringComparer.OrdinalIgnoreCase),
         };
+    }
+
+    private static (Material Material, ImageBrush Brush) AddSelectionOverlay(Material material)
+    {
+        var brush = new ImageBrush(TransparentPixel)
+        {
+            ViewportUnits = BrushMappingMode.RelativeToBoundingBox,
+            TileMode = TileMode.Tile,
+        };
+        MaterialGroup group;
+        if (material is MaterialGroup existing && !existing.IsFrozen)
+        {
+            group = existing;
+        }
+        else
+        {
+            group = new MaterialGroup();
+            group.Children.Add(material);
+        }
+        group.Children.Add(new DiffuseMaterial(brush));
+        return (group, brush);
     }
 
     private static ImageBrush? FindImageBrush(Material material)
@@ -256,6 +305,16 @@ public static class ModelViewHelper
             foreach (var child in group.Children)
                 if (FindImageBrush(child) is { } found) return found;
         return null;
+    }
+
+    private static readonly BitmapSource TransparentPixel = CreateTransparentPixel();
+
+    private static BitmapSource CreateTransparentPixel()
+    {
+        var bitmap = BitmapSource.Create(1, 1, 96, 96, PixelFormats.Bgra32, null,
+            new byte[] { 0, 0, 0, 0 }, 4);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     private static string? NormalizeProjectPath(string? path)

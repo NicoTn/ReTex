@@ -63,6 +63,13 @@
             </DockPanel>
         </Border>
 
+        <!-- This build contains ODOL model decoding. Keep the usage restriction visible at all times. -->
+        <Border DockPanel.Dock="Top" Padding="10,6" Background="#FF4A2F12"
+                BorderBrush="{StaticResource Accent.Warn}" BorderThickness="0,0,0,1">
+            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource Accent.Warn}" FontWeight="SemiBold"
+                       Text="⚠ PRIVATE / AUTHORIZED MODELS ONLY — The 3D preview decodes ODOL model data. Use it only with models you own or have explicit permission to inspect. Do not use it to extract, reconstruct, or redistribute another creator's work."/>
+        </Border>
+
         <!-- Project bar: current project + New / Open / Recent, always visible (document-bar style) -->
         <Border DockPanel.Dock="Top" Padding="8,5" Background="{StaticResource Bg.Status}"
                 BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,0,1">
@@ -140,8 +147,11 @@
                     <ComboBox DockPanel.Dock="Top" Margin="0,0,0,6" ItemsSource="{Binding PboNames}"
                               SelectedItem="{Binding PboFilter}" ToolTip="Filter by PBO (sub-mod)"/>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
-                        <ComboBox Width="110" ItemsSource="{Binding Categories}"
+                        <ComboBox Width="100" ItemsSource="{Binding Categories}"
                                   SelectedItem="{Binding CategoryFilter}"/>
+                        <ComboBox Width="130" Margin="6,0,0,0" ItemsSource="{Binding Subcategories}"
+                                  SelectedItem="{Binding SubcategoryFilter}"
+                                  ToolTip="Arsenal-style subcategory"/>
                         <TextBox Margin="6,0,0,0" VerticalContentAlignment="Center"
                                  Text="{Binding AssetSearch, UpdateSourceTrigger=PropertyChanged}"/>
                     </DockPanel>
@@ -154,7 +164,9 @@
                                                TextTrimming="CharacterEllipsis"/>
                                     <StackPanel Orientation="Horizontal">
                                         <Border Background="{StaticResource Bg.Chip}" CornerRadius="3" Padding="4,0" Margin="0,1,6,1">
-                                            <TextBlock Text="{Binding Category}" Foreground="{StaticResource Fg.Primary}" FontSize="10"/>
+                                            <TextBlock Foreground="{StaticResource Fg.Primary}" FontSize="10">
+                                                <Run Text="{Binding Category, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding SubcategoryLabel, Mode=OneWay}"/>
+                                            </TextBlock>
                                         </Border>
                                         <TextBlock Text="{Binding ClassName}" Foreground="{StaticResource Fg.Muted}" FontSize="11"
                                                    TextTrimming="CharacterEllipsis"/>
@@ -276,7 +288,9 @@
                                             Visibility="{Binding TextureWatchStatus, Converter={StaticResource NonEmptyToVisibility}}"
                                             ToolTip="Open the watched project PAA files; saving them reloads both previews"/>
                                     <Button Content="✎ Edit source" Padding="8,2" Command="{Binding OpenSourceTexturesCommand}"
-                                            ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
+                                           ToolTip="Open the source texture(s) in your image editor (temp copies) to reference or grab parts"/>
+                                    <Button Content="Paint Studio…" Padding="10,2" Margin="6,0,0,0" Click="OpenPaintWindow_Click"
+                                            IsEnabled="{Binding Paint.IsAvailable}" ToolTip="Open the full 2D/3D painting workspace in a separate window"/>
                                     <Button Content="⟳ Refresh" Padding="8,2" Margin="6,0,0,0" Command="{Binding RefreshPreviewCommand}"
                                             ToolTip="Reload the preview after editing the texture externally"/>
                                 </StackPanel>
@@ -318,6 +332,8 @@
                                             ToolTip="Reload the preview after editing the texture externally"/>
                                     <Button Content="⧉ Open in viewer" Padding="8,2" Margin="6,0,0,0" Click="OpenInViewer_Click"
                                             ToolTip="Export this model + your textures and open it in an external viewer (e.g. P3D Analyzer) for a game-faithful render. You'll be asked for the viewer's .exe the first time."/>
+                                    <Button Content="Paint Studio…" Padding="10,2" Margin="6,0,0,0" Click="OpenPaintWindow_Click"
+                                            IsEnabled="{Binding Paint.IsAvailable}" ToolTip="Open the full 2D/3D painting workspace in a separate window"/>
                                 </StackPanel>
                                 <!-- UV debug: flip/rotate/shift the texture on the preview to find the mapping that
                                      matches the in-game look. Diagnostic only; does not change the packed mod. -->
@@ -346,6 +362,9 @@
                                             <CheckBox Content="Wear UV coordinate grid" IsChecked="{Binding DiagnosticGrid}"
                                                       Foreground="{StaticResource Fg.Primary}"
                                                       ToolTip="Dress the model in a labelled u,v grid so you can see exactly which texture coordinate lands on each body part — and compare it against the game to prove placement is faithful."/>
+                                            <CheckBox Content="Render backfaces" IsChecked="{Binding RenderBackFaces}"
+                                                      Foreground="{StaticResource Fg.Primary}" Margin="0,4,0,0"
+                                                      ToolTip="Enabled by default because many Arma models mix face winding. Disable only to diagnose internal or intentionally one-sided geometry."/>
                                             <Button Content="⊞ Export UV grid (PNG)…" Command="{Binding ExportDiagnosticGridCommand}" Padding="6,3" Margin="0,4,0,0"
                                                     ToolTip="Save the labelled grid; wear it in-game (Arsenal) or open it in a viewer and compare which cell lands where vs this preview."/>
                                             <Button Content="⬒ Export UV map…" Command="{Binding ExportUvMapCommand}" Padding="6,3" Margin="0,4,0,0"
@@ -401,8 +420,9 @@
                         <Button Content="Remove" Margin="3,0,0,0" Command="{Binding RemoveEntryCommand}"
                                 ToolTip="Remove the selected retexture (Del)"/>
                     </UniformGrid>
-                    <ListBox ItemsSource="{Binding ProjectEntries}" SelectedItem="{Binding SelectedEntry}"
-                             HorizontalContentAlignment="Stretch">
+                    <ListBox x:Name="ProjectEntriesList" ItemsSource="{Binding ProjectEntries}" SelectedItem="{Binding SelectedEntry}"
+                             HorizontalContentAlignment="Stretch"
+                             PreviewMouseLeftButtonUp="ProjectEntriesList_PreviewMouseLeftButtonUp">
                         <ListBox.InputBindings>
                             <KeyBinding Key="Delete" Command="{Binding RemoveEntryCommand}"/>
                         </ListBox.InputBindings>

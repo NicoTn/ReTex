@@ -402,27 +402,61 @@ public static class RetexProjectService
         catch { /* best-effort: never let a stray edit block regeneration */ }
     }
 
-    /// <summary>Writes config.cpp (and ensures $PBOPREFIX$) and saves retex.json. Consolidates any
-    /// duplicate copied textures first (see <see cref="ConsolidateTextures"/>) so the generated
-    /// config references only the shared files.</summary>
+    /// <summary>Writes config.cpp (and ensures $PBOPREFIX$) and saves retex.json. Texture de-duplication
+    /// happens when assets are added; generation deliberately does not merge files because a user may
+    /// have made an identical working copy that they intend to edit independently.</summary>
     public static void GenerateConfig(RetexProject proj)
     {
         Directory.CreateDirectory(proj.AddonDir);
-        ConsolidateTextures(proj);
+        SynchronizeUniformPairs(proj);
         File.WriteAllText(Path.Combine(proj.AddonDir, "$PBOPREFIX$"), proj.Prefix);
         File.WriteAllText(proj.ConfigPath, ConfigGenerator.Generate(proj));
         proj.Save();
     }
 
+    /// <summary>Keeps the CfgWeapons uniform item and its worn CfgVehicles unit on the same project
+    /// textures/materials. The item is authoritative because it is the half users select and edit in
+    /// Arsenal/ReTex. Without this, changing a duplicated uniform's texture can update only the item
+    /// while Arma renders the partner unit with its old texture.</summary>
+    public static int SynchronizeUniformPairs(RetexProject proj)
+    {
+        int changed = 0;
+        foreach (var item in proj.Entries.Where(e => e.IsUniform && e.PartnerClass.Length > 0))
+        {
+            var unit = proj.Entries.FirstOrDefault(e => e.IsUniformUnit
+                && e.NewClassName.Equals(item.PartnerClass, StringComparison.OrdinalIgnoreCase));
+            if (unit is null) continue;
+
+            foreach (var source in item.Selections)
+            {
+                var target = unit.Selections.FirstOrDefault(s => s.Index == source.Index)
+                    ?? unit.Selections.FirstOrDefault(s => s.Name.Equals(source.Name, StringComparison.OrdinalIgnoreCase));
+                if (target is null) continue;
+                if (!target.ProjectTexture.Equals(source.ProjectTexture, StringComparison.OrdinalIgnoreCase))
+                {
+                    target.ProjectTexture = source.ProjectTexture;
+                    changed++;
+                }
+                if (!target.ProjectMaterial.Equals(source.ProjectMaterial, StringComparison.OrdinalIgnoreCase))
+                {
+                    target.ProjectMaterial = source.ProjectMaterial;
+                    changed++;
+                }
+            }
+        }
+        return changed;
+    }
+
     /// <summary>
-    /// Consolidates duplicate copied textures: when several selections were copied from the SAME
+    /// Explicitly consolidates duplicate copied textures: when several selections were copied from the SAME
     /// source texture into separate project .paa files (e.g. <c>foo.paa</c> + <c>foo_2.paa</c> - as
     /// happened in projects made before on-add de-duplication, or when the same texture is shared
     /// across many models), repoints them at one shared file and deletes the now-orphaned copies.
     /// Only BYTE-IDENTICAL duplicates are merged: if two copies of one source were edited differently
     /// they are left untouched, so no hand edit is ever lost. New retextures already share a file on
     /// add (see <see cref="AddRetexture"/>); this cleans up older/imported projects. Returns the
-    /// number of duplicate files removed. Caller saves.
+    /// number of duplicate files removed. This is intentionally not part of normal generation because
+    /// byte-identical files may be deliberate working copies. Caller must explicitly opt in and save.
     /// </summary>
     public static int ConsolidateTextures(RetexProject proj)
     {

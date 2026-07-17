@@ -1,0 +1,282 @@
+<Window x:Class="ReTex.App.PaintWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:h="http://helix-toolkit.org/wpf"
+        Title="ReTex Paint Studio" Icon="app.ico" Width="1500" Height="920"
+        MinWidth="1000" MinHeight="650" WindowStartupLocation="CenterOwner"
+        Background="{StaticResource Bg.Window}" Foreground="{StaticResource Fg.Primary}"
+        PreviewKeyDown="Paint_KeyDown" PreviewKeyUp="Paint_KeyUp">
+    <DockPanel LastChildFill="True">
+        <Border DockPanel.Dock="Top" Background="{StaticResource Bg.Toolbar}"
+                BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,0,1" Padding="8">
+            <DockPanel LastChildFill="True">
+                <Border DockPanel.Dock="Left" Background="#243149" CornerRadius="4" Padding="10,5" Margin="0,0,10,0">
+                    <StackPanel><TextBlock Text="ACTIVE TOOL" FontSize="9" Foreground="{StaticResource Fg.Muted}"/><TextBlock Text="{Binding Paint.ActiveToolName}" FontWeight="SemiBold"/></StackPanel>
+                </Border>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" HorizontalAlignment="Right">
+                    <StackPanel Orientation="Horizontal" Margin="0,0,14,0"
+                                Visibility="{Binding Paint.IsBusy, Converter={StaticResource BoolToVisibility}}">
+                        <ProgressBar Value="{Binding Paint.OperationProgress}" Maximum="1" Width="130" Height="8"
+                                     VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Button Content="Cancel" Command="{Binding Paint.CancelOperationCommand}" Padding="10,3"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding Paint.LastPaintLatencyMs, StringFormat={}{0:0.0} ms}"
+                               Foreground="#FF71D49B" VerticalAlignment="Center" Margin="0,0,14,0"
+                               ToolTip="Smoothed CPU time from pointer input to updated paint bitmap."/>
+                    <Button Content="Undo" Command="{Binding Paint.UndoCommand}" IsEnabled="{Binding Paint.CanUndo}" Padding="10,3"/>
+                    <Button Content="Redo" Command="{Binding Paint.RedoCommand}" IsEnabled="{Binding Paint.CanRedo}" Padding="10,3" Margin="4,0,8,0"/>
+                    <Button Content="SAVE ALL" Command="{Binding Paint.SaveAllCommand}" Padding="16,4" FontWeight="SemiBold"/>
+                </StackPanel>
+                <WrapPanel VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Visibility="{Binding Paint.UsesBrushControls, Converter={StaticResource BoolToVisibility}}">
+                        <TextBlock Text="Size" VerticalAlignment="Center" Foreground="{StaticResource Fg.Muted}"/>
+                        <Slider Value="{Binding Paint.BrushSize}" Minimum="1" Maximum="256" Width="90" Margin="6,0"/>
+                        <TextBox Text="{Binding Paint.BrushSize, UpdateSourceTrigger=LostFocus, StringFormat=0.##}" Width="46" HorizontalContentAlignment="Right"/>
+                        <TextBlock Text="Opacity" VerticalAlignment="Center" Foreground="{StaticResource Fg.Muted}" Margin="12,0,0,0"/>
+                        <Slider Value="{Binding Paint.Opacity}" Minimum="0.01" Maximum="1" Width="80" Margin="6,0"/>
+                        <TextBox Text="{Binding Paint.Opacity, UpdateSourceTrigger=LostFocus, StringFormat=0.##}" Width="46" HorizontalContentAlignment="Right"/>
+                    </StackPanel>
+                    <ComboBox ItemsSource="{Binding Paint.Textures}" SelectedItem="{Binding Paint.ActiveTexture}" DisplayMemberPath="DisplayName" Width="180" Margin="14,0,6,0"/>
+                    <ComboBox ItemsSource="{Binding Paint.Layouts}" SelectedItem="{Binding Paint.Layout}" Width="72"/>
+                </WrapPanel>
+            </DockPanel>
+        </Border>
+        <StatusBar DockPanel.Dock="Bottom" Background="{StaticResource Bg.Status}" Padding="6,2">
+            <TextBlock Text="{Binding Paint.Status}" Foreground="{StaticResource Fg.Status}"/>
+        </StatusBar>
+        <Grid>
+            <Grid.Style>
+                <Style TargetType="Grid">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Paint.IsBusy}" Value="True"><Setter Property="Cursor" Value="Wait"/></DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </Grid.Style>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="280"/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+            <Border Grid.Column="0" Background="#172136" BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,1,0">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="12">
+                        <TextBlock Text="TOOLS" FontWeight="Bold" FontSize="11" Foreground="{StaticResource Fg.Muted}" Margin="2,0,0,7"/>
+                        <ListBox ItemsSource="{Binding Paint.ToolChoices}" SelectedValuePath="Tool" SelectedValue="{Binding Paint.Tool}"
+                                 Background="Transparent" BorderThickness="0" Padding="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="2"/></ItemsPanelTemplate></ListBox.ItemsPanel>
+                            <ListBox.ItemContainerStyle>
+                                <Style TargetType="ListBoxItem">
+                                    <Setter Property="Padding" Value="8,7"/><Setter Property="Margin" Value="2"/>
+                                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                                    <Setter Property="BorderBrush" Value="{StaticResource Border.Muted}"/><Setter Property="BorderThickness" Value="1"/>
+                                    <Style.Triggers>
+                                        <Trigger Property="IsSelected" Value="True"><Setter Property="Background" Value="{StaticResource Bg.Selected}"/><Setter Property="BorderBrush" Value="#FF71D49B"/><Setter Property="FontWeight" Value="SemiBold"/></Trigger>
+                                        <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{StaticResource Bg.InputHover}"/></Trigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </ListBox.ItemContainerStyle>
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid Height="34"><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                        <Border Width="28" Height="28" CornerRadius="3" Background="#2B3954" VerticalAlignment="Center"><TextBlock Text="{Binding Glyph}" HorizontalAlignment="Center" VerticalAlignment="Center" FontWeight="Bold" FontSize="10"/></Border>
+                                        <StackPanel Grid.Column="1" Margin="7,0,0,0" VerticalAlignment="Center"><TextBlock Text="{Binding Name}" FontSize="11" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding Shortcut}" FontSize="9" Foreground="{StaticResource Fg.Muted}"/></StackPanel>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                        <Border Background="#202B42" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1"
+                                CornerRadius="3" Padding="8" Margin="0,8,0,0">
+                            <TextBlock Text="B Brush   E Eraser   I Eyedropper&#x0a;G Fill   W Wand   R Replace   C Colorize&#x0a;T Texture Tint   [ ] Size   X Swap   D Reset"
+                                       Foreground="{StaticResource Fg.Muted}" FontSize="10" LineHeight="16"/>
+                        </Border>
+
+                        <StackPanel Visibility="{Binding Paint.UsesColorControls, Converter={StaticResource BoolToVisibility}}">
+                        <Separator Margin="0,14,0,12" Background="{StaticResource Border.Muted}"/>
+                        <TextBlock Text="COLOR" FontWeight="Bold" FontSize="11" Foreground="{StaticResource Fg.Muted}" Margin="2,0,0,8"/>
+                        <Grid Width="208" Height="140" HorizontalAlignment="Left" Margin="0,0,0,10">
+                            <Canvas x:Name="ColorField" Width="180" Height="140" HorizontalAlignment="Left" ClipToBounds="False"
+                                    Cursor="Cross" MouseLeftButtonDown="ColorField_MouseLeftButtonDown"
+                                    MouseLeftButtonUp="ColorField_MouseLeftButtonUp" MouseMove="ColorField_MouseMove">
+                                <Grid Width="180" Height="140" Background="{Binding Paint.HueColorHex}">
+                                    <Rectangle><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="1,0"><GradientStop Color="White" Offset="0"/><GradientStop Color="#00FFFFFF" Offset="1"/></LinearGradientBrush></Rectangle.Fill></Rectangle>
+                                    <Rectangle><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1"><GradientStop Color="#00000000" Offset="0"/><GradientStop Color="Black" Offset="1"/></LinearGradientBrush></Rectangle.Fill></Rectangle>
+                                </Grid>
+                                <Ellipse Width="12" Height="12" Fill="Transparent" Stroke="Black" StrokeThickness="3"
+                                         Canvas.Left="{Binding Paint.ColorPickerX}" Canvas.Top="{Binding Paint.ColorPickerY}"><Ellipse.RenderTransform><TranslateTransform X="-6" Y="-6"/></Ellipse.RenderTransform></Ellipse>
+                                <Ellipse Width="10" Height="10" Fill="Transparent" Stroke="White" StrokeThickness="1"
+                                         Canvas.Left="{Binding Paint.ColorPickerX}" Canvas.Top="{Binding Paint.ColorPickerY}"><Ellipse.RenderTransform><TranslateTransform X="-5" Y="-5"/></Ellipse.RenderTransform></Ellipse>
+                            </Canvas>
+                            <Canvas x:Name="HueField" Width="18" Height="140" HorizontalAlignment="Right" Cursor="SizeNS"
+                                    MouseLeftButtonDown="HueField_MouseLeftButtonDown" MouseLeftButtonUp="HueField_MouseLeftButtonUp" MouseMove="HueField_MouseMove">
+                                <Rectangle Width="18" Height="140"><Rectangle.Fill><LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                                    <GradientStop Color="#FFFF0000" Offset="0"/><GradientStop Color="#FFFFFF00" Offset="0.1667"/>
+                                    <GradientStop Color="#FF00FF00" Offset="0.3333"/><GradientStop Color="#FF00FFFF" Offset="0.5"/>
+                                    <GradientStop Color="#FF0000FF" Offset="0.6667"/><GradientStop Color="#FFFF00FF" Offset="0.8333"/>
+                                    <GradientStop Color="#FFFF0000" Offset="1"/>
+                                </LinearGradientBrush></Rectangle.Fill></Rectangle>
+                                <Rectangle Width="24" Height="4" Fill="Transparent" Stroke="White" StrokeThickness="1"
+                                           Canvas.Left="-3" Canvas.Top="{Binding Paint.HuePickerY}"><Rectangle.RenderTransform><TranslateTransform Y="-2"/></Rectangle.RenderTransform></Rectangle>
+                            </Canvas>
+                        </Grid>
+                        <Grid Height="58">
+                            <Border Width="42" Height="42" HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="19,0,0,0"
+                                    BorderBrush="#FFCBD5E8" BorderThickness="1" Background="{Binding Paint.BackgroundColorHex}"/>
+                            <Border Width="42" Height="42" HorizontalAlignment="Left" VerticalAlignment="Top"
+                                    BorderBrush="White" BorderThickness="2" Background="{Binding Paint.ColorHex}"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                                <Button Content="Swap" Command="{Binding Paint.SwapColorsCommand}" Padding="7,3" ToolTip="Swap foreground and background colors"/>
+                                <Button Content="Reset" Command="{Binding Paint.ResetColorsCommand}" Padding="7,3" Margin="4,0,0,0" ToolTip="Reset to black and white"/>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,4,0"><TextBlock Text="Foreground" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.ColorHex, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                            <StackPanel Grid.Column="1" Margin="4,0,0,0"><TextBlock Text="Background" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.BackgroundColorHex, UpdateSourceTrigger=PropertyChanged}"/></StackPanel>
+                        </Grid>
+                        <Expander Header="Numeric color values" Margin="0,7,0,0">
+                            <StackPanel>
+                                <Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,3,0"><TextBlock Text="H" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Hue, UpdateSourceTrigger=LostFocus, StringFormat=0.##}" HorizontalContentAlignment="Right"/></StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="3,0"><TextBlock Text="S" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Saturation, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" HorizontalContentAlignment="Right"/></StackPanel>
+                                    <StackPanel Grid.Column="2" Margin="3,0,0,0"><TextBlock Text="V" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Value, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" HorizontalContentAlignment="Right"/></StackPanel>
+                                </Grid>
+                                <Grid Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions>
+                                    <StackPanel Margin="0,0,3,0"><TextBlock Text="R" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Red, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Right"/></StackPanel>
+                                    <StackPanel Grid.Column="1" Margin="3,0"><TextBlock Text="G" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Green, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Right"/></StackPanel>
+                                    <StackPanel Grid.Column="2" Margin="3,0,0,0"><TextBlock Text="B" FontSize="10" Foreground="{StaticResource Fg.Muted}"/><TextBox Text="{Binding Paint.Blue, UpdateSourceTrigger=LostFocus}" HorizontalContentAlignment="Right"/></StackPanel>
+                                </Grid>
+                            </StackPanel>
+                        </Expander>
+                        <TextBlock Text="Recent" Margin="0,9,0,4"/>
+                        <ItemsControl ItemsSource="{Binding Paint.RecentColors}">
+                            <ItemsControl.ItemsPanel><ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Button Width="24" Height="24" Margin="0,0,4,4" Background="{Binding}"
+                                            BorderBrush="#FFCBD5E8" BorderThickness="1" CommandParameter="{Binding}"
+                                            Command="{Binding DataContext.Paint.SelectRecentColorCommand, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding Paint.UsesBrushControls, Converter={StaticResource BoolToVisibility}}">
+                        <Separator Margin="0,14,0,12" Background="{StaticResource Border.Muted}"/>
+                        <TextBlock Text="BRUSH" FontWeight="Bold" FontSize="11" Foreground="{StaticResource Fg.Muted}" Margin="2,0,0,8"/>
+                        <UniformGrid Columns="3" Margin="0,0,0,9">
+                            <Button Content="Hard" Command="{Binding Paint.ApplyBrushPresetCommand}" CommandParameter="Hard" Padding="5,4" Margin="0,0,3,0"/>
+                            <Button Content="Soft" Command="{Binding Paint.ApplyBrushPresetCommand}" CommandParameter="Soft" Padding="5,4" Margin="3,0"/>
+                            <Button Content="Airbrush" Command="{Binding Paint.ApplyBrushPresetCommand}" CommandParameter="Airbrush" Padding="5,4" Margin="3,0,0,0"/>
+                        </UniformGrid>
+                        <Expander Header="Saved presets" Margin="0,0,0,9">
+                            <StackPanel Margin="0,6,0,0">
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <ComboBox ItemsSource="{Binding Paint.BrushPresets}" SelectedItem="{Binding Paint.SelectedBrushPreset}"
+                                              DisplayMemberPath="Name" MinWidth="120" ToolTip="Saved brush presets"/>
+                                    <Button Grid.Column="1" Content="Apply" Command="{Binding Paint.ApplySelectedBrushPresetCommand}" Padding="7,3" Margin="6,0,0,0"/>
+                                </Grid>
+                                <Grid>
+                                    <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                    <TextBox Text="{Binding Paint.BrushPresetName, UpdateSourceTrigger=PropertyChanged}" ToolTip="Preset name"/>
+                                    <Button Grid.Column="1" Content="Save" Command="{Binding Paint.SaveBrushPresetCommand}" Padding="7,3" Margin="6,0,0,0"/>
+                                    <Button Grid.Column="2" Content="Delete" Command="{Binding Paint.DeleteBrushPresetCommand}" Padding="7,3" Margin="4,0,0,0"/>
+                                </Grid>
+                            </StackPanel>
+                        </Expander>
+                        <DockPanel Margin="0,0,0,2"><TextBox Text="{Binding Paint.BrushSize, UpdateSourceTrigger=LostFocus, StringFormat=0.##}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Size" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.BrushSize}" Minimum="1" Maximum="256"/>
+                        <DockPanel Margin="0,7,0,2"><TextBox Text="{Binding Paint.Hardness, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Hardness" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.Hardness}" Minimum="0" Maximum="1"/>
+                        <DockPanel Margin="0,7,0,2"><TextBox Text="{Binding Paint.Opacity, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Opacity" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.Opacity}" Minimum="0.01" Maximum="1"/>
+                        <DockPanel Margin="0,7,0,2"><TextBox Text="{Binding Paint.Flow, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Flow" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.Flow}" Minimum="0.01" Maximum="1"/>
+                        <DockPanel Margin="0,7,0,2"><TextBox Text="{Binding Paint.Spacing, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Spacing" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.Spacing}" Minimum="0.02" Maximum="1"/>
+                        </StackPanel>
+
+                        <StackPanel Visibility="{Binding Paint.UsesTintControls, Converter={StaticResource BoolToVisibility}}">
+                        <Separator Margin="0,14,0,12" Background="{StaticResource Border.Muted}"/>
+                        <TextBlock Text="TEXTURE TINT" FontWeight="Bold" FontSize="11" Foreground="{StaticResource Fg.Muted}" Margin="2,0,0,8"/>
+                        <DockPanel Margin="0,0,0,2"><TextBox Text="{Binding Paint.TintStrength, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Tint strength" VerticalAlignment="Center"/></DockPanel>
+                        <Slider Value="{Binding Paint.TintStrength}" Minimum="0" Maximum="1"/>
+                        <TextBlock Text="Blends toward the selected color while retaining source shading, scratches, wear, and alpha."
+                                   TextWrapping="Wrap" Foreground="{StaticResource Fg.Muted}" FontSize="10" Margin="0,6,0,0"/>
+                        </StackPanel>
+
+                        <Separator Margin="0,14,0,12" Background="{StaticResource Border.Muted}"/>
+                        <TextBlock Text="SELECTION" FontWeight="Bold" FontSize="11" Foreground="{StaticResource Fg.Muted}" Margin="2,0,0,8"/>
+                        <StackPanel Visibility="{Binding Paint.UsesColorMatchControls, Converter={StaticResource BoolToVisibility}}">
+                        <DockPanel Margin="0,0,0,2"><TextBox Text="{Binding Paint.Tolerance, UpdateSourceTrigger=LostFocus, StringFormat=0.###}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Color tolerance" VerticalAlignment="Center"/></DockPanel><Slider Value="{Binding Paint.Tolerance}" Minimum="0" Maximum="1"/>
+                        <CheckBox Content="Select globally" IsChecked="{Binding Paint.GlobalMatch}" Margin="0,8,0,0"/>
+                        </StackPanel>
+                        <UniformGrid Columns="2" Margin="0,8,0,0"><Button Content="Clear" Command="{Binding Paint.ClearSelectionCommand}" Padding="7,4" Margin="0,0,3,0"/><Button Content="Invert" Command="{Binding Paint.InvertSelectionCommand}" Padding="7,4" Margin="3,0,0,0"/></UniformGrid>
+                        <Border Visibility="{Binding Paint.ShowsMagicWandHelp, Converter={StaticResource BoolToVisibility}}"
+                                Background="#202B42" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1" CornerRadius="3" Padding="8" Margin="0,10,0,0">
+                            <TextBlock Text="Magic Wand modifiers:&#x0a;Click: replace&#x0a;Shift + click: add&#x0a;Alt + click: subtract"
+                                       Foreground="{StaticResource Fg.Muted}" FontSize="11" LineHeight="17"/>
+                        </Border>
+
+                        <Expander Header="3D NAVIGATION" Margin="0,14,0,0"
+                                  Visibility="{Binding Paint.Shows3DNavigation, Converter={StaticResource BoolToVisibility}}">
+                            <StackPanel Margin="0,8,0,0">
+                                <DockPanel Margin="0,0,0,2"><TextBox Text="{Binding Paint.CameraMoveSpeed, UpdateSourceTrigger=LostFocus, StringFormat=0.##}" Width="52" HorizontalContentAlignment="Right" DockPanel.Dock="Right"/><TextBlock Text="Move speed" VerticalAlignment="Center"/></DockPanel>
+                                <Slider Value="{Binding Paint.CameraMoveSpeed}" Minimum="0.1" Maximum="5"/>
+                                <TextBlock Text="Click the 3D view, then use WASD and Q/E. Shift moves faster; Ctrl enables precision movement."
+                                           TextWrapping="Wrap" Foreground="{StaticResource Fg.Muted}" FontSize="10" Margin="0,6,0,0"/>
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+            <Border x:Name="Paint2DPanel" Grid.Column="1" Background="#101827" ClipToBounds="True"
+                    BorderBrush="{StaticResource Border.Muted}" BorderThickness="0,0,1,0"
+                    MouseWheel="Paint2D_MouseWheel" MouseLeftButtonDown="Paint2D_MouseLeftButtonDown"
+                    MouseLeftButtonUp="Paint2D_MouseLeftButtonUp" MouseMove="Paint2D_MouseMove"
+                    MouseRightButtonDown="Paint2D_MouseRightButtonDown" MouseLeave="Paint2D_MouseLeave">
+                <Border.Style>
+                    <Style TargetType="Border"><Style.Triggers>
+                        <DataTrigger Binding="{Binding Paint.Layout}" Value="3D"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                        <DataTrigger Binding="{Binding Paint.Layout}" Value="2D"><Setter Property="Grid.ColumnSpan" Value="2"/></DataTrigger>
+                    </Style.Triggers></Style>
+                </Border.Style>
+                <Viewbox x:Name="Paint2DViewbox" Stretch="Uniform" RenderTransformOrigin="0,0">
+                    <Viewbox.RenderTransform><TransformGroup><ScaleTransform x:Name="Paint2DScale"/><TranslateTransform x:Name="Paint2DTranslate"/></TransformGroup></Viewbox.RenderTransform>
+                    <Grid>
+                        <Image x:Name="PaintTextureImage" Source="{Binding Paint.ActiveBitmap}" Stretch="None" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                        <Image Source="{Binding Paint.ActiveSelectionBitmap}" Stretch="None" IsHitTestVisible="False" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                        <Image Source="{Binding Paint.ActiveSelectionOutlineBitmap}" Stretch="None" IsHitTestVisible="False" RenderOptions.BitmapScalingMode="NearestNeighbor"/>
+                        <Canvas IsHitTestVisible="False">
+                            <Ellipse x:Name="Paint2DBrushCursorOuter" Width="{Binding Paint.BrushSize}" Height="{Binding Paint.BrushSize}"
+                                     Stroke="#D0000000" StrokeThickness="3" Fill="Transparent" Visibility="Collapsed"/>
+                            <Ellipse x:Name="Paint2DBrushCursorInner" Width="{Binding Paint.BrushSize}" Height="{Binding Paint.BrushSize}"
+                                     Stroke="#F0FFFFFF" StrokeThickness="1" Fill="Transparent" Visibility="Collapsed"/>
+                        </Canvas>
+                    </Grid>
+                </Viewbox>
+            </Border>
+            <Border x:Name="Paint3DPanel" Grid.Column="2" Background="{StaticResource Bg.Panel}">
+                <Border.Style>
+                    <Style TargetType="Border"><Style.Triggers>
+                        <DataTrigger Binding="{Binding Paint.Layout}" Value="2D"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger>
+                        <DataTrigger Binding="{Binding Paint.Layout}" Value="3D"><Setter Property="Grid.Column" Value="1"/><Setter Property="Grid.ColumnSpan" Value="2"/></DataTrigger>
+                    </Style.Triggers></Style>
+                </Border.Style>
+                <Grid MouseLeave="Paint3D_MouseLeave">
+                    <h:HelixViewport3D x:Name="PaintViewport" Background="{StaticResource Bg.Panel}"
+                                       ShowCoordinateSystem="False" ShowViewCube="True" ZoomExtentsWhenLoaded="True"
+                                       Focusable="True"
+                                       IsHeadLightEnabled="True" PreviewMouseLeftButtonDown="Paint3D_MouseLeftButtonDown"
+                                       PreviewMouseLeftButtonUp="Paint3D_MouseLeftButtonUp" PreviewMouseMove="Paint3D_MouseMove"
+                                       PreviewMouseRightButtonDown="Paint3D_MouseRightButtonDown"
+                                       PreviewMouseRightButtonUp="Paint3D_MouseRightButtonUp">
+                        <ModelVisual3D Content="{Binding PreviewModel3D}"/>
+                    </h:HelixViewport3D>
+                    <Canvas IsHitTestVisible="False">
+                        <Ellipse x:Name="Paint3DBrushCursorOuter" Width="{Binding Paint.BrushSize}" Height="{Binding Paint.BrushSize}"
+                                 Stroke="#D0000000" StrokeThickness="3" Fill="Transparent" Visibility="Collapsed"/>
+                        <Ellipse x:Name="Paint3DBrushCursorInner" Width="{Binding Paint.BrushSize}" Height="{Binding Paint.BrushSize}"
+                                 Stroke="#F0FFFFFF" StrokeThickness="1" Fill="Transparent" Visibility="Collapsed"/>
+                    </Canvas>
+                    <Border HorizontalAlignment="Left" VerticalAlignment="Bottom" Margin="10"
+                            Background="#C0182235" BorderBrush="{StaticResource Border.Muted}" BorderThickness="1"
+                            CornerRadius="3" Padding="8,5" IsHitTestVisible="False">
+                        <TextBlock Text="Right-drag rotate | WASD move | Q/E down/up | Shift fast | Ctrl precise"
+                                   Foreground="{StaticResource Fg.Muted}" FontSize="10"/>
+                    </Border>
+                </Grid>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

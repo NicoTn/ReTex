@@ -191,7 +191,10 @@ public static class OdolLodReader
         // are stored in the LOD's face list and otherwise render as huge stray triangles across the
         // model. They span implausibly far vs the median edge; a robust multiple separates them from
         // real geometry. Fail-safe: if too many would drop, keep everything (never nuke real geometry).
-        var (faces, faceTexFiltered, keptIndices) = DropSpikeFaces(m.Faces, faceTex, m.Points);
+        bool hasProxySelections = m.NamedSelections.Any(name =>
+            name.StartsWith("proxy:", StringComparison.OrdinalIgnoreCase));
+        var (faces, faceTexFiltered, keptIndices) = DropSpikeFaces(
+            m.Faces, faceTex, m.Points, hasProxySelections);
 
         // Named-selection face membership (hiddenSelections[] -> faces), remapped through the spike
         // filter so ordinals stay aligned with the kept face list. Enables texture-path-independent
@@ -214,11 +217,11 @@ public static class OdolLodReader
         };
     }
 
-    /// <summary>Removes "spike" faces - proxy triangles and degenerate geometry whose longest edge is a
-    /// large multiple (30x) of the median face edge - which otherwise render as stray triangles. Returns
-    /// the filtered faces + their parallel texture indices. No-op if the filter would remove more than 3%
-    /// of faces (guards against models with legitimately varied geometry).</summary>
-    private static (List<OdolFace> Faces, List<int> FaceTex, int[] KeptIndices) DropSpikeFaces(List<OdolFace> faces, List<int> faceTex, float[][] pts)
+    /// <summary>Removes visual-preview artifacts: extreme cross-mesh faces and ODOL proxy marker
+    /// triangles. Proxy markers are filtered only when the LOD declares proxy selections and a small
+    /// group of oversized, untextured triangles uses points that no textured face references.</summary>
+    private static (List<OdolFace> Faces, List<int> FaceTex, int[] KeptIndices) DropSpikeFaces(
+        List<OdolFace> faces, List<int> faceTex, float[][] pts, bool hasProxySelections)
     {
         int[] Identity() { var a = new int[faces.Count]; for (int i = 0; i < a.Length; i++) a[i] = i; return a; }
         if (faces.Count == 0) return (faces, faceTex, Identity());
@@ -242,19 +245,46 @@ public static class OdolLodReader
         if (median <= 0) return (faces, faceTex, Identity());
         float threshold = median * (30f * 30f); // 30x on edge length == 900x on squared length
 
-        // Distinguish proxy triangles from legitimately large panels by FRACTION. A character/gear LOD
-        // has only a handful of proxy markers (weapon/pistol/... ~0.03% of faces); a vehicle has many
-        // genuinely large hull plates (~0.5%+). So drop the over-long faces only when they are a tiny
-        // fraction of the mesh - otherwise (vehicles/props) leave every face intact.
+        var drop = new bool[faces.Count];
+
+        // Distinguish extreme cross-mesh connections from broadly low-detail geometry by fraction.
         int overLong = 0;
         for (int i = 0; i < faces.Count; i++) if (lens[i] > threshold) overLong++;
-        if (overLong == 0 || overLong > faces.Count * 0.003) return (faces, faceTex, Identity());
+        if (overLong > 0 && overLong <= faces.Count * 0.01)
+            for (int i = 0; i < faces.Count; i++) drop[i] = lens[i] > threshold;
+
+        if (hasProxySelections && faceTex.Count == faces.Count)
+        {
+            var usedByTexturedFace = new bool[pts.Length];
+            for (int i = 0; i < faces.Count; i++)
+            {
+                if (faceTex[i] < 0) continue;
+                foreach (int vi in faces[i].VertexTableIndex)
+                    if ((uint)vi < (uint)usedByTexturedFace.Length) usedByTexturedFace[vi] = true;
+            }
+
+            float proxyEdgeThreshold = median * (8f * 8f);
+            var proxyCandidates = new List<int>();
+            for (int i = 0; i < faces.Count; i++)
+            {
+                var vi = faces[i].VertexTableIndex;
+                if (faceTex[i] >= 0 || vi.Length != 3 || lens[i] <= proxyEdgeThreshold) continue;
+                if (vi.All(v => (uint)v < (uint)usedByTexturedFace.Length && !usedByTexturedFace[v]))
+                    proxyCandidates.Add(i);
+            }
+
+            int proxyLimit = Math.Max(4, faces.Count / 1000);
+            if (proxyCandidates.Count > 0 && proxyCandidates.Count <= proxyLimit)
+                foreach (int i in proxyCandidates) drop[i] = true;
+        }
+
+        if (!drop.Any(x => x)) return (faces, faceTex, Identity());
 
         var keptFaces = new List<OdolFace>(faces.Count);
         var keptTex = new List<int>(faces.Count);
         var kept = new List<int>(faces.Count);
         for (int i = 0; i < faces.Count; i++)
-            if (lens[i] <= threshold) { keptFaces.Add(faces[i]); if (i < faceTex.Count) keptTex.Add(faceTex[i]); kept.Add(i); }
+            if (!drop[i]) { keptFaces.Add(faces[i]); if (i < faceTex.Count) keptTex.Add(faceTex[i]); kept.Add(i); }
         return (keptFaces, keptTex, kept.ToArray());
     }
 
