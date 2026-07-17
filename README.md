@@ -1,4 +1,6 @@
-# ReTex - Arma 3 Retexture Studio
+### ReTex - Arma 3 Retexture Studio
+
+<img width="1872" height="745" alt="image" src="https://github.com/user-attachments/assets/c3e7bdeb-970d-402e-a922-b87fabe1d9bd" />
 
 ReTex is a Windows desktop app for creating Arma 3 retexture mods. It scans installed mods,
 finds assets with hidden selections, copies their source textures, generates `config.cpp`, and
