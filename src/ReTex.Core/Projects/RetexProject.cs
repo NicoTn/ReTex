@@ -105,6 +105,30 @@ public sealed class RetexProject
         var proj = JsonSerializer.Deserialize<RetexProject>(File.ReadAllText(projectFilePath), JsonOpts)
                    ?? throw new InvalidDataException("Invalid project file.");
         proj.ProjectDir = Path.GetDirectoryName(projectFilePath)!;
+        proj.NormalizeLegacyUniformPairs();
         return proj;
+    }
+
+    /// <summary>Repairs pair role flags/back-links from older project files without renaming or
+    /// removing either entry. Some transitional versions persisted only one half's role flag.</summary>
+    public void NormalizeLegacyUniformPairs()
+    {
+        foreach (var entry in Entries.Where(e => e.PartnerClass.Length > 0).ToList())
+        {
+            var partner = Entries.FirstOrDefault(e =>
+                e.NewClassName.Equals(entry.PartnerClass, StringComparison.OrdinalIgnoreCase));
+            if (partner is null) continue;
+
+            if (entry.IsUniform)
+            {
+                partner.IsUniformUnit = true;
+                if (partner.PartnerClass.Length == 0) partner.PartnerClass = entry.NewClassName;
+            }
+            else if (entry.IsUniformUnit)
+            {
+                partner.IsUniform = true;
+                if (partner.PartnerClass.Length == 0) partner.PartnerClass = entry.NewClassName;
+            }
+        }
     }
 }

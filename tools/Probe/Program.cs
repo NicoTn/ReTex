@@ -5,6 +5,20 @@ using ReTex.Core.Projects;
 
 System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
 
+// Exercise the same dependency-aware asset load used by the UI and print resolved models.
+// Probe --modassetmodels <workshopRoot> <mod-name-fragment> [class-name-fragment]
+if (args.Length >= 3 && args[0] == "--modassetmodels")
+{
+    var mamMods = ModScanner.ScanFolder(args[1]);
+    var mamMod = mamMods.First(m => m.Name.Contains(args[2], StringComparison.OrdinalIgnoreCase)
+        || m.DisplayName.Contains(args[2], StringComparison.OrdinalIgnoreCase));
+    var mamFilter = args.Length >= 4 ? args[3] : "";
+    foreach (var mamAsset in AssetService.LoadForMod(mamMod, mamMods, Console.Error.WriteLine)
+                 .Where(a => mamFilter.Length == 0 || a.ClassName.Contains(mamFilter, StringComparison.OrdinalIgnoreCase)))
+        Console.WriteLine($"{mamAsset.ClassName} -> '{mamAsset.Model}' ({Path.GetFileName(mamAsset.SourcePbo)})");
+    return 0;
+}
+
 // Diagnostic fixture: copy an official MLOD and replace every face-corner UV with values derived
 // from its point position. BI Binarize can then convert it to ODOL so the packed UV codec can be
 // compared against known source values. Probe --patchmloduv <source> <destination>

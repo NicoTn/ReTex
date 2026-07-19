@@ -60,7 +60,7 @@ public static class AssetExtractor
                 Subcategory = ClassifySubcategory(c, index, category),
                 Parent = c.Parent,
                 DisplayName = ResolveString(c, index, "displayName"),
-                Model = ResolveString(c, index, "model"),
+                Model = ResolveModel(c, index, category),
                 Scope = scope,
                 HiddenSelections = hs,
                 HiddenSelectionsTextures = hst,
@@ -113,6 +113,19 @@ public static class AssetExtractor
         for (var cur = c; cur is not null && guard-- > 0; cur = Parent(cur, index))
             if (cur.Value(key)?.Raw is long l) return (int)l;
         return fallback;
+    }
+
+    /// <summary>Finds the model actually worn/rendered by an equipment item. Headgear and vests
+    /// commonly keep it in inherited ItemInfo.uniformModel; the top-level model may be absent or be
+    /// only an inventory/suitpack model. Other asset categories use their normal model property.</summary>
+    private static string ResolveModel(RapClass c, Dictionary<string, RapClass> index, AssetCategory category)
+    {
+        if (category is AssetCategory.Equipment or AssetCategory.Weapon)
+        {
+            var worn = ResolveNestedString(c, index, "ItemInfo", "uniformModel");
+            if (worn.Length > 0 && worn != "-") return worn;
+        }
+        return ResolveString(c, index, "model");
     }
 
     private static bool HasInChain(RapClass c, Dictionary<string, RapClass> index, Func<RapClass, bool> pred)

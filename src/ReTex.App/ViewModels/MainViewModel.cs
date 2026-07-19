@@ -472,7 +472,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         if (mod is null) return;
 
         SetStatus($"Loading assets from {mod.DisplayName}...");
-        _allAssets = await Task.Run(() => AssetService.LoadForMod(mod));
+        _allAssets = await Task.Run(() => AssetService.LoadForMod(mod, _allMods));
+
+        // Repair blank discovery metadata in legacy entries, including hidden uniform partners.
+        var repaired = _project is null
+            ? 0
+            : RetexProjectService.BackfillSourceMetadata(_project, _allAssets);
+        if (repaired > 0)
+        {
+            _project!.Save();
+            RefreshEntries();
+            if (SelectedEntry is not null)
+                _ = LoadPreviewModel(PreviewModelFor(SelectedEntry), SelectedEntry.Selections);
+        }
 
         // Rebuild the PBO (sub-mod) list from the loaded assets.
         PboNames.Clear();
@@ -484,7 +496,8 @@ public partial class MainViewModel : ObservableObject, IDisposable
 
         RebuildSubcategories();
         ApplyAssetFilter();
-        SetStatus($"{mod.DisplayName}: {_allAssets.Count} retexturable assets in {PboNames.Count - 1} PBOs");
+        SetStatus($"{mod.DisplayName}: {_allAssets.Count} retexturable assets in {PboNames.Count - 1} PBOs" +
+                  (repaired > 0 ? $"; repaired {repaired} legacy source field(s)" : ""));
     }
 
     partial void OnAssetSearchChanged(string value) => ApplyAssetFilter();
@@ -749,7 +762,7 @@ public partial class MainViewModel : ObservableObject, IDisposable
             // RetexProjectService.PreserveManualEdits).
             PreserveManualEdits();
             RefreshEntries();
-            SetStatus($"Opened {proj.Name} ({proj.Entries.Count} retextures)");
+            SetStatus($"Opened {proj.Name} ({VisibleProjectEntries(proj).Count()} retextures)");
             WarnIfMissingTextures(proj);
         }
         catch (Exception ex) { SetStatus($"Open failed: {ex.Message}", StatusSeverity.Error); }
@@ -1706,9 +1719,19 @@ public partial class MainViewModel : ObservableObject, IDisposable
         {
             e.HasMissingTexture = e.Selections.Any(s =>
                 s.ProjectTexture.Length > 0 && !File.Exists(Path.Combine(_project.AddonDir, s.ProjectTexture)));
-            ProjectEntries.Add(e);
+            // A uniform's CfgVehicles partner is required by Arma but is an implementation detail.
+            // Keep orphan/legacy units visible so malformed old projects are never silently hidden.
+            if (!IsInternalUniformUnit(_project, e)) ProjectEntries.Add(e);
         }
     }
+
+    private static IEnumerable<RetexEntry> VisibleProjectEntries(RetexProject project) =>
+        project.Entries.Where(e => !IsInternalUniformUnit(project, e));
+
+    private static bool IsInternalUniformUnit(RetexProject project, RetexEntry entry) =>
+        entry.IsUniformUnit && entry.PartnerClass.Length > 0
+        && project.Entries.Any(e => e.IsUniform
+            && e.NewClassName.Equals(entry.PartnerClass, StringComparison.OrdinalIgnoreCase));
 
     [RelayCommand]
     private void SaveConfig()

@@ -7,6 +7,38 @@ namespace ReTex.Core.Projects;
 /// <summary>Creates/edits retexture projects: scaffolding, adding retextures (copying source textures), config generation, packing.</summary>
 public static class RetexProjectService
 {
+    /// <summary>Repairs discovery metadata missing from older projects after their source mod has
+    /// been scanned. Existing values are authoritative and are never replaced.</summary>
+    public static int BackfillSourceMetadata(RetexProject proj, IEnumerable<AssetInfo> assets)
+    {
+        var byClass = assets
+            .GroupBy(a => a.ClassName, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+        int changed = 0;
+
+        foreach (var entry in proj.Entries)
+        {
+            if (!byClass.TryGetValue(entry.SourceClass, out var asset)) continue;
+            if (entry.SourceModel.Length == 0 && asset.Model.Length > 0)
+            {
+                entry.SourceModel = asset.Model;
+                changed++;
+            }
+            if (entry.SourceAddon.Length == 0 && asset.SourceAddon.Length > 0)
+            {
+                entry.SourceAddon = asset.SourceAddon;
+                changed++;
+            }
+            if (asset.SourceAddon.Length > 0 && !proj.RequiredAddons.Contains(asset.SourceAddon,
+                    StringComparer.OrdinalIgnoreCase))
+            {
+                proj.RequiredAddons.Add(asset.SourceAddon);
+                changed++;
+            }
+        }
+        return changed;
+    }
+
     /// <summary>Creates a new project folder (addon structure + $PBOPREFIX$ + retex.json).</summary>
     public static RetexProject CreateProject(string parentDir, string name, string? prefix = null, string author = "")
     {
@@ -408,6 +440,7 @@ public static class RetexProjectService
     public static void GenerateConfig(RetexProject proj)
     {
         Directory.CreateDirectory(proj.AddonDir);
+        proj.NormalizeLegacyUniformPairs();
         SynchronizeUniformPairs(proj);
         File.WriteAllText(Path.Combine(proj.AddonDir, "$PBOPREFIX$"), proj.Prefix);
         File.WriteAllText(proj.ConfigPath, ConfigGenerator.Generate(proj));

@@ -166,9 +166,11 @@ public static class ConfigGenerator
     private static void EmitUniformUnit(StringBuilder sb, RetexEntry e, RetexProject p)
     {
         sb.AppendLine($"    class {e.NewClassName}: {e.SourceClass} {{");
-        sb.AppendLine("        scope = 2;");
-        sb.AppendLine("        scopeArsenal = 2;");
-        sb.AppendLine("        scopeCurator = 2;");
+        // This is the internal worn-model half of a uniform, not an independently selectable unit.
+        // Keep it config-accessible for ItemInfo.uniformClass while hiding it from Eden/Arsenal/Zeus.
+        sb.AppendLine("        scope = 1;");
+        sb.AppendLine("        scopeArsenal = 0;");
+        sb.AppendLine("        scopeCurator = 0;");
         if (e.DisplayName.Length > 0)
             sb.AppendLine($"        displayName = {Quote(e.DisplayName)};");
         if (e.PartnerClass.Length > 0)

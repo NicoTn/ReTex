@@ -48,6 +48,9 @@ packages the finished project as a loadable `@mod`.
 The 3D preview is actively being developed. It currently provides a practical way to inspect many
 modern Arma 3 retextures before packing or launching the game:
 
+- Decodes visual LOD geometry from supported ODOL v73/v75 and editable MLOD models.
+- Reads packed points, normals, UV sets, triangle and quad faces, sections, and materials.
+- Resolves diffuse PAA textures from model sections and RVMAT stages.
 - Maps project textures through hidden-selection names and face membership where available.
 - Displays separate texture groups with hover-to-identify labels.
 - Supports model orbit, zoom, view-cube navigation, and automatic framing.
